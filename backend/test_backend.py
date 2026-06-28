@@ -12,6 +12,10 @@ import json
 import os
 import pytest
 from unittest.mock import patch, MagicMock
+from dotenv import load_dotenv
+
+# Load .env so real API keys are available (does not override existing env vars)
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 
 # ── Env must be set before importing app modules ──────────────────────────────
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
@@ -27,6 +31,8 @@ from schemas import (
     PlaylistRequest,
 )
 from cyanite import search_tracks, fetch_similar_tracks
+import cyanite as _cyanite_module
+_cyanite_module._USE_MOCK = True  # force mock for all non-real-API tests
 from playlist import (
     build_playlist,
     score_track,
@@ -96,6 +102,11 @@ def app_client():
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestCyaniteMock:
+
+    @pytest.fixture(autouse=True)
+    def force_mock(self, monkeypatch):
+        """Ensure mock mode regardless of env key, so these tests never hit the real API."""
+        monkeypatch.setattr("cyanite._USE_MOCK", True)
 
     def test_search_returns_requested_count(self):
         tracks = search_tracks("pop", limit=30)
@@ -485,7 +496,7 @@ async def _mock_explain_shap_batch(tracks):
     ]
 
 
-async def _mock_explain_counterfactual(orig, alt, positions):
+async def _mock_explain_counterfactual(orig, alt, positions, orig_tracks=None, alt_tracks=None):
     return f"Switching from '{orig}' to '{alt}' changed positions {positions}."
 
 
@@ -590,3 +601,117 @@ class TestEndpoint:
         for item in r.json()["playlist"]:
             total = sum(abs(v) for v in item["shap_values"].values())
             assert total > 0, f"All SHAP values are zero for {item['track']['title']}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. cyanite.py — real API integration (skipped without a valid key)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CYANITE_KEY = os.getenv("cyaniteApiKey", "").strip('"').strip("'")
+_HAS_REAL_CYANITE_KEY = bool(_CYANITE_KEY) and _CYANITE_KEY != "test-key"
+
+
+class TestCyaniteRealAPI:
+    """Integration tests against the real Cyanite REST API.
+
+    Skipped when ``cyaniteApiKey`` is absent or is the test-suite placeholder.
+    To run only these:
+        pytest test_backend.py::TestCyaniteRealAPI -v
+    """
+
+    @pytest.fixture(autouse=True)
+    def require_real_key(self):
+        if not _HAS_REAL_CYANITE_KEY:
+            pytest.skip("cyaniteApiKey not set to a real value — skipping live API tests")
+
+    def test_search_returns_tracks(self):
+        from cyanite import _real_search_tracks
+        tracks = _real_search_tracks("upbeat pop", {}, 5)
+        assert len(tracks) > 0, "Expected at least one track from real Cyanite API"
+
+    def test_search_track_fields_populated(self):
+        from cyanite import _real_search_tracks
+        tracks = _real_search_tracks("upbeat pop", {}, 3)
+        for t in tracks:
+            assert t.id, "Track id is empty"
+            assert t.title, "Track title is empty"
+            assert t.artist, "Track artist is empty"
+            assert 0.0 <= t.energy <= 1.0, f"energy out of range: {t.energy}"
+            assert 0.0 <= t.valence <= 1.0, f"valence out of range: {t.valence}"
+            assert 0.0 <= t.arousal <= 1.0, f"arousal out of range: {t.arousal}"
+            assert t.tempo_tag in {"slow", "medium", "fast"}, f"unexpected tempo_tag: {t.tempo_tag}"
+            assert t.bpm > 0, f"bpm should be positive: {t.bpm}"
+            assert isinstance(t.moods, list) and len(t.moods) >= 1
+
+    def test_search_scores_descend(self):
+        from cyanite import _real_search_tracks
+        tracks = _real_search_tracks("dance electronic", {}, 10)
+        scores = [t.cyanite_score for t in tracks]
+        assert scores == sorted(scores, reverse=True), "Tracks should be ordered best-score-first"
+
+    def test_search_with_metadata_filter(self):
+        from cyanite import _real_search_tracks
+        filt = {"MainGenreV2.tag": {"$in": ["pop"]}}
+        tracks = _real_search_tracks("pop", filt, 5)
+        assert len(tracks) > 0, f"Genre filter returned 0 tracks — filter may be wrong: {filt}"
+
+    def test_search_bad_key_returns_empty(self):
+        """A bad API key should return [] rather than raise an exception."""
+        import requests as _requests
+        from cyanite import _real_search_tracks
+        bad_session = _requests.Session()
+        bad_session.headers.update({"x-api-key": "bad-key-xyz"})
+        with patch("cyanite._session", return_value=bad_session):
+            tracks = _real_search_tracks("pop", {}, 5)
+        assert tracks == [], "Bad key should produce empty list, not an exception"
+
+    def test_similar_tracks_returned(self):
+        from cyanite import _real_search_tracks, _real_fetch_similar
+        tracks = _real_search_tracks("pop", {}, 1)
+        if not tracks:
+            pytest.skip("Search returned no tracks — cannot test similar")
+        similar = _real_fetch_similar(tracks[0].id, 3)
+        assert len(similar) > 0, "Expected similar tracks from real API"
+
+    def test_similar_track_fields_populated(self):
+        from cyanite import _real_search_tracks, _real_fetch_similar
+        tracks = _real_search_tracks("pop", {}, 1)
+        if not tracks:
+            pytest.skip("Search returned no tracks")
+        similar = _real_fetch_similar(tracks[0].id, 3)
+        for s in similar:
+            assert s.id
+            assert 0.0 <= s.energy <= 1.0
+            assert 0.0 <= s.valence <= 1.0
+
+    def test_similar_scores_descend(self):
+        from cyanite import _real_search_tracks, _real_fetch_similar
+        tracks = _real_search_tracks("pop", {}, 1)
+        if not tracks:
+            pytest.skip("Search returned no tracks")
+        similar = _real_fetch_similar(tracks[0].id, 5)
+        if len(similar) < 2:
+            pytest.skip("Not enough similar tracks returned to check ordering")
+        scores = [s.cyanite_score for s in similar]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_search_with_intent_filter(self):
+        """Ensures build_cyanite_filter produces a filter that actually returns tracks.
+
+        This is the integration gap that previously went untested — the app always
+        passes a filter built from LLM intent, but prior tests used an empty filter.
+        """
+        from cyanite import _real_search_tracks, build_cyanite_filter
+        intent = ExtractedIntent(
+            query="upbeat pop female vocals",
+            duration_seconds=600,
+            ending="bang",
+            num_tracks=5,
+            metadata_filter=MetadataFilter(genre_tags=["pop"], mood_tags=["happy"]),
+        )
+        filt = build_cyanite_filter(intent)
+        tracks = _real_search_tracks(intent.query, filt, 10)
+        assert len(tracks) > 0, (
+            f"build_cyanite_filter produced a filter that returned 0 tracks.\n"
+            f"Filter was: {filt}"
+        )

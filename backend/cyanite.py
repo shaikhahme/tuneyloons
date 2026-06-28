@@ -12,6 +12,7 @@ Real endpoints:
 Falls back to deterministic mock data when cyaniteApiKey is not set.
 """
 
+import json
 import os
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -24,7 +25,7 @@ from schemas import TrackModels
 _RAW_KEY = os.getenv("cyaniteApiKey", "")
 _API_KEY = _RAW_KEY.strip('"').strip("'")
 _BASE_URL = "https://rest-api.cyanite.ai/v1"
-_USE_MOCK = True  # TODO: set to `not _API_KEY` when Cyanite API is confirmed working
+_USE_MOCK = not _API_KEY
 
 _MODELS_TO_FETCH = [
     "MoodSimpleV2",
@@ -71,7 +72,7 @@ def _parse_model_items(items: list) -> dict:
         "description": "",
     }
     for item in items:
-        model = item.get("model", "")
+        model = item.get("version", "")  # Cyanite uses "version", not "model"
 
         if model == "MoodSimpleV2":
             tags = item.get("tags") or []
@@ -79,9 +80,9 @@ def _parse_model_items(items: list) -> dict:
                 out["moods"] = [t.lower() for t in tags[:3]]
 
         elif model == "MainGenreV2":
-            tag = item.get("tag") or ""
-            if tag:
-                out["genre"] = tag.lower()
+            tags = item.get("tags") or []  # MainGenreV2 uses "tags" list, not "tag"
+            if tags:
+                out["genre"] = tags[0].lower()
 
         elif model == "BpmV2":
             tag = item.get("tag")
@@ -97,11 +98,10 @@ def _parse_model_items(items: list) -> dict:
                 out["valence"] = round(float(scores["valence"]), 3)
             if "arousal" in scores:
                 out["arousal"] = round(float(scores["arousal"]), 3)
-            el = item.get("energyLevel") or {}
-            if isinstance(el, dict):
-                out["energy"] = _energy_level_to_float(el.get("tag", "medium"))
+            el = item.get("energyLevel") or ""  # energyLevel is a plain string e.g. "high"
+            if isinstance(el, str) and el:
+                out["energy"] = _energy_level_to_float(el)
             else:
-                # fallback: derive energy from arousal
                 out["energy"] = out["arousal"]
 
         elif model == "CharacterV2":
@@ -110,9 +110,9 @@ def _parse_model_items(items: list) -> dict:
                 out["character"] = [t.lower() for t in tags[:2]]
 
         elif model == "MovementV2":
-            tag = item.get("tag") or ""
-            if tag:
-                out["movement"] = tag.lower()
+            tags = item.get("tags") or []  # MovementV2 uses "tags" list, not "tag"
+            if tags:
+                out["movement"] = tags[0].lower()
 
         elif model == "AutoDescriptionV2":
             out["description"] = item.get("description") or ""
@@ -122,10 +122,12 @@ def _parse_model_items(items: list) -> dict:
 
 def _build_track_model(item: dict, features: dict) -> TrackModels:
     track = item.get("track", {})
+    raw_title = track.get("title", "Unknown")
+    title = os.path.splitext(raw_title)[0]
     return TrackModels(
         id=track.get("id", "unknown"),
-        title=track.get("name", "Unknown"),
-        artist=track.get("artist", "Unknown"),
+        title=title,
+        artist=features.get("description", "Unknown"),
         duration_seconds=int(track.get("duration") or 180),
         genre=features["genre"],
         moods=features["moods"],
@@ -154,7 +156,8 @@ def _fetch_models_for_item(sess: requests.Session, item: dict) -> TrackModels | 
             timeout=15,
         )
         resp.raise_for_status()
-        features = _parse_model_items(resp.json().get("items", []))
+        model_resp = resp.json()
+        features = _parse_model_items(model_resp.get("items", []))
         return _build_track_model(item, features)
     except Exception as exc:
         print(f"[cyanite] model fetch failed for {cyanite_id}: {exc}")
@@ -170,21 +173,10 @@ def build_cyanite_filter(intent) -> dict:
     """
     f: dict = {}
 
-    if intent.genre_tags:
-        f["MainGenreV2.tag"] = {"$in": intent.genre_tags}
-
-    bpm: dict = {}
-    if intent.min_bpm:
-        bpm["$gte"] = intent.min_bpm
-    if intent.max_bpm:
-        bpm["$lte"] = intent.max_bpm
-    if bpm:
-        f["BpmV2.tag"] = bpm
-
-    # Single primary mood at low threshold so we don't over-filter
-    if intent.mood_tags:
-        f[f"MoodSimpleV2.scores.{intent.mood_tags[0]}"] = {"$gte": 0.2}
-
+    # Metadata filters are omitted — the Cyanite library may be small and
+    # any hard filter risks returning 0 results. The text query carries all
+    # intent (genre, mood, tempo). Re-enable filters once the catalog size
+    # and exact Cyanite field semantics are confirmed.
     return f
 
 
@@ -196,6 +188,7 @@ def _real_search_tracks(query: str, metadata_filter: dict, limit: int) -> list[T
     if metadata_filter:
         body["metadataFilter"] = metadata_filter
 
+    print(f"[cyanite] search query={query!r} filter={metadata_filter} limit={limit}")
     try:
         resp = sess.post(
             f"{_BASE_URL}/private-alpha/library-tracks/search",
@@ -209,6 +202,9 @@ def _real_search_tracks(query: str, metadata_filter: dict, limit: int) -> list[T
         print(f"[cyanite] search failed: {exc}")
         return []
 
+    print(f"[cyanite] search returned {len(items)} raw items")
+    if items:
+        print(f"[cyanite] first track: {json.dumps(items[0].get('track', {}))}")
     if not items:
         return []
 
@@ -221,6 +217,7 @@ def _real_search_tracks(query: str, metadata_filter: dict, limit: int) -> list[T
                 tracks.append(result)
 
     tracks.sort(key=lambda t: t.cyanite_score, reverse=True)
+    print(f"[cyanite] resolved {len(tracks)} tracks after model fetch")
     return tracks
 
 
@@ -330,4 +327,4 @@ def fetch_similar_tracks(track_id: str, limit: int = 5) -> list[TrackModels]:
     """Fetch similar tracks. Uses mock data when API key is absent."""
     if _USE_MOCK:
         return _mock_fetch_similar(track_id, limit)
-    return _real_fetch_similar_tracks(track_id, limit)
+    return _real_fetch_similar(track_id, limit)

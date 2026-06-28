@@ -17,7 +17,7 @@ import re
 import anthropic
 from schemas import ExtractedIntent, MetadataFilter
 
-_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+_client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), max_retries=4)
 _MODEL = "claude-haiku-4-5-20251001"
 _MOCK = os.getenv("LLM_MOCK", "").lower() in ("1", "true", "yes")
 
@@ -221,19 +221,36 @@ async def explain_transitions_batch(
 # ── Counterfactual explanation ────────────────────────────────────────────────
 
 async def explain_counterfactual(
-    original_ending: str, alt_ending: str, changed_positions: list[int]
+    original_ending: str,
+    alt_ending: str,
+    changed_positions: list[int],
+    original_tracks: list,
+    alt_tracks: list,
 ) -> str:
     if _MOCK:
         return (
             f"Switching the ending from '{original_ending}' to '{alt_ending}' reshaped "
             f"positions {changed_positions}, giving the set a different emotional trajectory."
         )
+
+    lines = []
+    for pos in changed_positions:
+        idx = pos - 1
+        if idx < len(original_tracks) and idx < len(alt_tracks):
+            o = original_tracks[idx]
+            a = alt_tracks[idx]
+            lines.append(
+                f"Position {pos}: '{o.title}' (energy={o.energy}, moods={o.moods}) "
+                f"→ '{a.title}' (energy={a.energy}, moods={a.moods})"
+            )
+
+    track_diff = "\n".join(lines) if lines else "No track-level details available."
     user_msg = (
-        f"Original playlist ended with '{original_ending}'. "
-        f"Alternative ends with '{alt_ending}'. "
-        f"Tracks at positions {changed_positions} changed. "
-        "Explain in 1-2 sentences why those tracks changed and what the listener experiences differently. "
-        "Be concrete. Return only the explanation text, no JSON."
+        f"Original playlist ending style: '{original_ending}'. "
+        f"Alternative ending style: '{alt_ending}'.\n\n"
+        f"Track changes:\n{track_diff}\n\n"
+        "Explain in 1-2 sentences why these tracks changed and what the listener "
+        "experiences differently. Be concrete. Return only the explanation, no JSON."
     )
     response = await _client.messages.create(
         model=_MODEL,
