@@ -253,6 +253,10 @@ def _real_fetch_similar(track_id: str, limit: int) -> list[TrackModels]:
 
 # ── Mock fallback ─────────────────────────────────────────────────────────────
 
+_MOCK_KEYS = [
+    "C Major", "G Major", "D Major", "A Major", "E Major", "F Major", "Bb Major",
+    "A Minor", "E Minor", "D Minor", "B Minor", "F# Minor", "G Minor", "C Minor",
+]
 _MOCK_GENRES = ["pop", "electronic", "hip-hop", "r&b", "indie-pop", "dance", "ambient"]
 _MOCK_MOODS = [["happy", "energetic"], ["calm", "chill"], ["dark", "sad"],
                ["uplifting", "euphoric"], ["dreamy", "ethereal"]]
@@ -278,7 +282,7 @@ def _make_mock_track(seed_id: int, score: float) -> TrackModels:
     energy = round(rng.uniform(0.3, 1.0), 2)
     return TrackModels(
         id=f"libtr_mock_{seed_id:06d}",
-        title=rng.choice(_MOCK_TITLES) + f" (#{seed_id})",
+        title=rng.choice(_MOCK_TITLES),
         artist=rng.choice(_MOCK_ARTISTS),
         duration_seconds=rng.randint(150, 240),
         genre=rng.choice(_MOCK_GENRES),
@@ -288,6 +292,7 @@ def _make_mock_track(seed_id: int, score: float) -> TrackModels:
         arousal=round(energy * rng.uniform(0.8, 1.1), 2),
         tempo_tag=rng.choice(_MOCK_TEMPOS),
         bpm=round(rng.uniform(90, 160), 1),
+        musical_key=rng.choice(_MOCK_KEYS),
         movement=rng.choice(_MOCK_MOVEMENTS),
         character=rng.choice(_MOCK_CHARACTERS),
         description=f"A {rng.choice(_MOCK_GENRES)} track with {rng.choice(_MOCK_MOODS)[0]} qualities.",

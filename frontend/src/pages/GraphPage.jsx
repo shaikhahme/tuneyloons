@@ -3,14 +3,9 @@ import { useNavigate } from 'react-router-dom'
 import { generateSetList } from '../api/setlistApi'
 import ThreeDKnowledgeGraph from '../components/ThreeDKnowledgeGraph'
 import RecommendationPanel from '../components/RecommendationPanel'
+import AquariumLoading from '../components/AquariumLoading'
 
-const PIPELINE_STEPS = [
-  'Extracting your vibe\u2026',
-  'Searching the catalog\u2026',
-  'Curating tracks for your set\u2026',
-  'Analysing audio features & writing explanations\u2026',
-  'Mapping connections in the knowledge graph\u2026',
-]
+const NUM_AQUARIUM_STEPS = 6
 
 export default function GraphPage() {
   const navigate = useNavigate()
@@ -20,8 +15,7 @@ export default function GraphPage() {
   const [showEdgeLabels, setShowEdgeLabels] = useState(false)
   const [activeTab, setActiveTab] = useState('primary')
   const [loading, setLoading] = useState(true)
-  const [completedSteps, setCompletedSteps] = useState([])
-  const [currentStep, setCurrentStep] = useState('')
+  const [stepIndex, setStepIndex] = useState(0)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -30,36 +24,41 @@ export default function GraphPage() {
     let filters = {}
     try { filters = JSON.parse(sessionStorage.getItem('sla_filters') || '{}') } catch {}
 
-    function onProgress(message) {
+    function onProgress() {
       if (!mountedRef.current) return
-      setCompletedSteps(prev => currentStep ? [...prev, currentStep] : prev)
-      setCurrentStep(message)
+      setStepIndex(prev => Math.min(prev + 1, NUM_AQUARIUM_STEPS - 1))
     }
 
     generateSetList({ prompt, filters }, onProgress).then(result => {
       if (mountedRef.current) {
         setData(result)
         setLoading(false)
-        setCurrentStep('')
       }
     }).catch(err => {
       if (mountedRef.current) {
         setError(err.message || 'Failed to generate set list.')
         setLoading(false)
-        setCurrentStep('')
       }
     })
 
     return () => { mountedRef.current = false }
   }, [])
 
-  const handleNodeClick = useCallback((id) => {
-    setSelectedId(prev => prev === id ? null : id)
-  }, [])
-
-  const handleSelectSong = useCallback((id) => {
-    setSelectedId(prev => prev === id ? null : id)
-  }, [])
+  // Single source of truth for graph focus.
+  // Resolves songId → graph node ID (exact match, then title fallback for
+  // alternative-list songs that aren't directly in the graph) then toggles selection.
+  const focusSongNode = useCallback((songId) => {
+    setSelectedId(prev => {
+      let graphId = data?.graph.nodes.find(n => n.id === songId)?.id
+      if (!graphId && data) {
+        const allTracks = [...(data.recommendations ?? []), ...(data.alternativeRecommendations ?? [])]
+        const title = allTracks.find(t => t.id === songId)?.title
+        if (title) graphId = data.graph.nodes.find(n => n.title === title)?.id
+      }
+      const next = graphId ?? songId
+      return prev === next ? null : next
+    })
+  }, [data])
 
   const breadcrumb = (() => {
     if (!selectedId || !data) return null
@@ -88,33 +87,7 @@ export default function GraphPage() {
     <div className="page2-wrapper">
       <div className="graph-area">
         {loading ? (
-          <div className="loading-overlay">
-            <div className="pipeline-progress">
-              <div className="pipeline-title">Building your set list\u2026</div>
-              <div className="pipeline-steps">
-                {completedSteps.map((step, i) => (
-                  <div key={i} className="pipeline-step done">
-                    <span className="step-icon">&#10003;</span>
-                    <span className="step-text">{step}</span>
-                  </div>
-                ))}
-                {currentStep ? (
-                  <div className="pipeline-step active">
-                    <span className="step-icon step-spinner" />
-                    <span className="step-text">{currentStep}</span>
-                  </div>
-                ) : null}
-                {PIPELINE_STEPS.filter(
-                  s => !completedSteps.includes(s) && s !== currentStep
-                ).map((step, i) => (
-                  <div key={'pending-' + i} className="pipeline-step pending">
-                    <span className="step-icon">&#8226;</span>
-                    <span className="step-text">{step}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
+          <AquariumLoading stepIndex={stepIndex} />
         ) : error ? (
           <div className="loading-overlay">
             <div className="loading-text">{error}</div>
@@ -132,14 +105,14 @@ export default function GraphPage() {
             graphData={data.graph}
             selectedId={selectedId}
             showEdgeLabels={showEdgeLabels}
-            onNodeClick={handleNodeClick}
+            onNodeClick={focusSongNode}
           />
         ) : null}
 
         {/* Controls overlay */}
         <div className="graph-controls">
           <div className="glass-panel-dark graph-controls-panel">
-            <div className="graph-title">Set List Aquarium</div>
+            <div className="graph-title">Song Aquarium</div>
             <div className="toggle-row">
               <div
                 className={'toggle-switch' + (showEdgeLabels ? ' on' : '')}
@@ -172,7 +145,7 @@ export default function GraphPage() {
         <RecommendationPanel
           recommendations={activeList}
           selectedId={selectedId}
-          onSelectSong={handleSelectSong}
+          onSelectSong={focusSongNode}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           counterfactualExplanation={data.counterfactualExplanation}

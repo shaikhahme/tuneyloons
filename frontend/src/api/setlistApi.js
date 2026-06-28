@@ -33,6 +33,8 @@ function mapGraph(graph, playlist) {
     energy: node.energy,
     genre: node.genre,
     type: node.type,
+    bpm: node.bpm ?? 0,
+    musical_key: node.musical_key ?? '',
   }))
 
   const edges = graph.edges.map(edge => ({

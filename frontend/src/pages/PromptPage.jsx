@@ -57,7 +57,7 @@ export default function PromptPage() {
       <div className="glass-panel prompt-card">
         <div className="app-logo-row">
           <span className="logo-icon" aria-hidden="true">🐠</span>
-          <h1 className="app-title">Set List Aquarium</h1>
+          <h1 className="app-title">Song Aquarium</h1>
         </div>
 
         <p className="app-subtitle">
