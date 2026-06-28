@@ -26,6 +26,7 @@ from schemas import PlaylistRequest, PlaylistResponse, PlaylistTrack
 from cyanite import search_tracks, fetch_similar_tracks, build_cyanite_filter
 from llm import (
     extract_intent,
+    explain_all,
     explain_shap_batch,
     explain_transitions_batch,
     explain_counterfactual,
@@ -117,11 +118,15 @@ async def _run(intent) -> PlaylistResponse:
         for i in range(len(tracks) - 1)
     ]
 
-    # Merge main + alt into one SHAP call to stay within rate limits (4 calls total vs 5)
-    combined_expl, transition_explanations, counterfactual_explanation = await asyncio.gather(
-        explain_shap_batch(main_batch + alt_batch),
-        explain_transitions_batch(trans_batch),
-        explain_counterfactual(intent.ending, alt_intent.ending, changed_positions, tracks, alt_tracks),
+    # Single call for all explanations — 2 LLM calls total per request
+    combined_expl, transition_explanations, counterfactual_explanation = await explain_all(
+        main_batch + alt_batch,
+        trans_batch,
+        intent.ending,
+        alt_intent.ending,
+        changed_positions,
+        tracks,
+        alt_tracks,
     )
     main_expl = combined_expl[:len(main_batch)]
     alt_expl = combined_expl[len(main_batch):]
@@ -209,11 +214,15 @@ async def generate_playlist_stream(request: PlaylistRequest):
                 (tracks[i].title, tracks[i + 1].title, playlist_items[i + 1][3], feat_deltas_list[i])
                 for i in range(len(tracks) - 1)
             ]
-            # Merge main + alt into one SHAP call to stay within rate limits (4 calls total vs 5)
-            combined_expl, transition_explanations, counterfactual_explanation = await asyncio.gather(
-                explain_shap_batch(main_batch + alt_batch),
-                explain_transitions_batch(trans_batch),
-                explain_counterfactual(intent.ending, alt_intent.ending, changed_positions, tracks, alt_tracks),
+            # Single call for all explanations — 2 LLM calls total per request
+            combined_expl, transition_explanations, counterfactual_explanation = await explain_all(
+                main_batch + alt_batch,
+                trans_batch,
+                intent.ending,
+                alt_intent.ending,
+                changed_positions,
+                tracks,
+                alt_tracks,
             )
             main_expl = combined_expl[:len(main_batch)]
             alt_expl = combined_expl[len(main_batch):]

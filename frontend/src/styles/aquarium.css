@@ -539,7 +539,7 @@ body {
 
 .breadcrumb-bar {
   position: absolute;
-  bottom: 16px;
+  bottom: 56px;
   left: 16px;
   right: 340px;
   z-index: 10;
@@ -549,6 +549,37 @@ body {
   color: var(--seafoam);
   line-height: 1.5;
   text-shadow: 0 0 10px rgba(127,239,255,0.5);
+}
+
+/* ── Node hover info bar ──────────────────────────────────────────────────── */
+
+.node-hover-bar {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  right: 340px;
+  z-index: 10;
+  padding: 10px 20px;
+  display: flex;
+  gap: 28px;
+  flex-wrap: wrap;
+  font-size: 0.80rem;
+  color: var(--seafoam);
+  pointer-events: none;
+}
+
+.node-hover-bar span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.node-hover-bar strong {
+  color: var(--aqua);
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
 }
 
 /* ── Right Panel ──────────────────────────────────────────────────────────── */

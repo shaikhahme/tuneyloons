@@ -32,6 +32,7 @@ export default function ThreeDKnowledgeGraph({
   selectedId,
   showEdgeLabels,
   onNodeClick,
+  onNodeHover,
 }) {
   const containerRef = useRef(null)
   const graphRef     = useRef(null)
@@ -430,6 +431,7 @@ export default function ThreeDKnowledgeGraph({
         linkThreeObjectExtend={false}
         linkLabel={linkLabel}
         onNodeClick={(node) => onNodeClick(node.id)}
+        onNodeHover={(node) => onNodeHover?.(node ?? null)}
       />
     </div>
   )

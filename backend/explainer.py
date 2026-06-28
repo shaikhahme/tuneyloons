@@ -96,26 +96,35 @@ def build_alternative_intent(intent: ExtractedIntent) -> ExtractedIntent:
 
     Perturbation strategy:
       - Flip the ending style (bang → calm, calm → bang, neutral → calm).
-      - Invert the energy range constraint.
+      - Append opposite-energy keywords to the query so prompt_similarity
+        (the highest-weighted feature) favours a different subset of tracks.
     """
     alt_ending = _ENDING_FLIP.get(intent.ending, "calm")
+
+    energy_hint = (
+        "low energy gentle soft mellow"
+        if alt_ending == "calm"
+        else "high energy intense powerful driving"
+    )
+    alt_query = f"{intent.query} {energy_hint}"
 
     from schemas import MetadataFilter
     mf = intent.metadata_filter
     alt_filter = MetadataFilter(
-        # Invert energy direction
-        min_energy=None if mf.min_energy else 0.0,
-        max_energy=0.45 if intent.ending == "bang" else None,
+        min_energy=mf.min_energy,
+        max_energy=mf.max_energy,
         tempo_tag=mf.tempo_tag,
         genres=mf.genres,
     )
 
     return ExtractedIntent(
-        query=intent.query,
+        query=alt_query,
         duration_seconds=intent.duration_seconds,
         ending=alt_ending,
         num_tracks=intent.num_tracks,
         metadata_filter=alt_filter,
+        mood_tags=intent.mood_tags,
+        genre_tags=intent.genre_tags,
     )
 
 
@@ -145,7 +154,9 @@ def build_alternative_playlist(
     original_playlist = build_playlist(candidates, intent)
     original_tracks = [t for t, *_ in original_playlist]
 
-    alt_playlist = build_playlist(candidates, alt_intent)
+    # Exclude main playlist tracks so the alternative is always meaningfully different
+    used_ids = {t.id for t in original_tracks}
+    alt_playlist = build_playlist(candidates, alt_intent, used_ids=used_ids)
     alt_tracks = [t for t, *_ in alt_playlist]
 
     changed = find_changed_positions(original_tracks, alt_tracks)

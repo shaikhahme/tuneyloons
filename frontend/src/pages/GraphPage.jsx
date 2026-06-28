@@ -14,6 +14,7 @@ export default function GraphPage() {
   const [selectedId, setSelectedId] = useState(null)
   const [showEdgeLabels, setShowEdgeLabels] = useState(false)
   const [activeTab, setActiveTab] = useState('primary')
+  const [hoveredNode, setHoveredNode] = useState(null)
   const [loading, setLoading] = useState(true)
   const [stepIndex, setStepIndex] = useState(0)
   const mountedRef = useRef(true)
@@ -106,6 +107,7 @@ export default function GraphPage() {
             selectedId={selectedId}
             showEdgeLabels={showEdgeLabels}
             onNodeClick={focusSongNode}
+            onNodeHover={setHoveredNode}
           />
         ) : null}
 
@@ -137,6 +139,15 @@ export default function GraphPage() {
         {breadcrumb && (
           <div className="glass-panel-dark breadcrumb-bar" aria-live="polite">
             {breadcrumb}
+          </div>
+        )}
+
+        {hoveredNode && (
+          <div className="glass-panel-dark node-hover-bar" aria-live="polite">
+            {hoveredNode.bpm > 0 && <span><strong>BPM</strong> {Math.round(hoveredNode.bpm)}</span>}
+            {hoveredNode.musical_key && <span><strong>Key</strong> {hoveredNode.musical_key}</span>}
+            {hoveredNode.genre && <span><strong>Genre</strong> {hoveredNode.genre}</span>}
+            {hoveredNode.moods?.length > 0 && <span><strong>Moods</strong> {hoveredNode.moods.join(', ')}</span>}
           </div>
         )}
       </div>

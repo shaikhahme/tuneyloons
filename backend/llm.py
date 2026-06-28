@@ -107,118 +107,142 @@ async def extract_intent(prompt: str) -> ExtractedIntent:
     )
 
 
-# ── Batch SHAP explanations (ONE call for all tracks) ─────────────────────────
+# ── Single combined explanation call (2 LLM calls total per request) ──────────
 
-async def explain_shap_batch(
-    tracks: list[tuple[str, dict[str, float], int, int]]
-) -> list[tuple[str, str]]:
+async def explain_all(
+    shap_batch: list[tuple[str, dict[str, float], int, int]],
+    transitions: list[tuple[str, str, float, dict[str, float]]],
+    original_ending: str,
+    alt_ending: str,
+    changed_positions: list[int],
+    original_tracks: list,
+    alt_tracks: list,
+) -> tuple[list[tuple[str, str]], list[str], str]:
     """
-    Explain all tracks in a single LLM call.
+    Single LLM call covering all three explanation tasks:
+      - SHAP explanations for every track (main + alt combined)
+      - Transition explanations
+      - Counterfactual explanation
 
-    Args:
-        tracks: list of (title, shap_values, position, total)
-
-    Returns:
-        list of (why_song, why_position) — same order as input.
+    Returns: (track_explanations, transition_explanations, counterfactual)
     """
+    n_tracks = len(shap_batch)
+
     if _MOCK:
-        return [
+        track_expls = [
             (
                 f'"{title}" was selected for its strong energy and mood alignment.',
                 f"At position {pos} of {total} it supports the overall arc.",
             )
-            for title, _, pos, total in tracks
+            for title, _, pos, total in shap_batch
         ]
-    lines = []
-    for i, (title, shap_vals, pos, total) in enumerate(tracks):
+        trans_expls = [
+            f'The move from "{frm}" to "{to}" keeps the energy flowing with a smooth blend.'
+            for frm, to, *_ in transitions
+        ]
+        counterfactual = (
+            f"Switching the ending from '{original_ending}' to '{alt_ending}' reshaped "
+            f"positions {changed_positions}, giving the set a different emotional trajectory."
+        )
+        return track_expls, trans_expls, counterfactual
+
+    # ── Section 1: tracks ──
+    track_lines = []
+    for i, (title, shap_vals, pos, total) in enumerate(shap_batch):
         top = sorted(shap_vals.items(), key=lambda x: -abs(x[1]))[:4]
         shap_str = ", ".join(f"{k}: {v:+.2f}" for k, v in top)
-        lines.append(f'{i + 1}. "{title}" at position {pos}/{total}. SHAP: {shap_str}')
+        track_lines.append(f'{i + 1}. "{title}" pos {pos}/{total}. SHAP: {shap_str}')
+
+    # ── Section 2: transitions ──
+    trans_lines = []
+    for i, (frm, to, score, feats) in enumerate(transitions):
+        feat_str = ", ".join(f"{k}: {v:+.2f}" for k, v in feats.items())
+        trans_lines.append(f'{i + 1}. "{frm}" → "{to}" (score {score:.2f}). {feat_str}')
+
+    # ── Section 3: counterfactual ──
+    cf_lines = []
+    for pos in changed_positions:
+        idx = pos - 1
+        if idx < len(original_tracks) and idx < len(alt_tracks):
+            o, a = original_tracks[idx], alt_tracks[idx]
+            cf_lines.append(
+                f"  pos {pos}: '{o.title}' (energy={o.energy}, moods={o.moods})"
+                f" → '{a.title}' (energy={a.energy}, moods={a.moods})"
+            )
+    cf_diff = "\n".join(cf_lines) if cf_lines else "  (no track-level details)"
 
     user_msg = (
-        "You are a music curator. For each track below, write:\n"
-        "- why_song: one sentence why it was selected (top positive SHAP contributors).\n"
-        "- why_position: one sentence why it sits at this position in the journey.\n\n"
-        "Tracks:\n" + "\n".join(lines) + "\n\n"
-        "Return a JSON array — one object per track, same order:\n"
-        '[{"why_song": "...", "why_position": "..."}, ...]\n'
-        "Return ONLY the JSON array, no markdown."
+        "You are an AI music curator and DJ. Answer all three sections below in ONE JSON object.\n\n"
+
+        "## SECTION 1 — Track explanations\n"
+        "For each track write why_song (one sentence: top SHAP contributors) "
+        "and why_position (one sentence: role in the energy arc).\n"
+        "Tracks:\n" + "\n".join(track_lines) + "\n\n"
+
+        "## SECTION 2 — Transition explanations\n"
+        "For each transition write one sentence from a DJ perspective.\n"
+        "Transitions:\n" + ("\n".join(trans_lines) if trans_lines else "  (none)") + "\n\n"
+
+        "## SECTION 3 — Counterfactual\n"
+        f"Original ending: '{original_ending}'. Alternative ending: '{alt_ending}'.\n"
+        f"Track changes:\n{cf_diff}\n"
+        "Write 1-2 sentences explaining why tracks changed and what the listener experiences differently.\n\n"
+
+        "Return ONLY this JSON, no markdown:\n"
+        '{\n'
+        '  "tracks": [{"why_song": "...", "why_position": "..."}, ...],\n'
+        '  "transitions": ["sentence 1", ...],\n'
+        '  "counterfactual": "..."\n'
+        '}'
     )
 
     response = await _client.messages.create(
         model=_MODEL,
         messages=[{"role": "user", "content": user_msg}],
         temperature=0.3,
-        max_tokens=150 * len(tracks),
+        max_tokens=150 * n_tracks + 80 * len(transitions) + 150,
     )
 
-    results = _parse_json(response.content[0].text)
+    result = _parse_json(response.content[0].text)
 
-    # Normalise — ensure we always return the right number of items
-    out: list[tuple[str, str]] = []
-    for i in range(len(tracks)):
-        item = results[i] if i < len(results) else {}
-        out.append((
+    # ── Parse tracks ──
+    raw_tracks = result.get("tracks", [])
+    track_expls: list[tuple[str, str]] = []
+    for i in range(n_tracks):
+        item = raw_tracks[i] if i < len(raw_tracks) else {}
+        track_expls.append((
             item.get("why_song", "Selected for its strong match with the prompt."),
             item.get("why_position", "Placed here to support the energy arc."),
         ))
-    return out
+
+    # ── Parse transitions ──
+    raw_trans = result.get("transitions", [])
+    trans_expls: list[str] = []
+    for i in range(len(transitions)):
+        trans_expls.append(
+            str(raw_trans[i]) if i < len(raw_trans) else "Smooth energy flow between tracks."
+        )
+
+    counterfactual = str(result.get("counterfactual", "The alternative playlist explores a different emotional direction."))
+
+    return track_expls, trans_expls, counterfactual
 
 
-# ── Batch transition explanations (ONE call for all transitions) ──────────────
+# ── Kept for test compatibility ────────────────────────────────────────────────
+
+async def explain_shap_batch(
+    tracks: list[tuple[str, dict[str, float], int, int]]
+) -> list[tuple[str, str]]:
+    expls, _, _ = await explain_all(tracks, [], "neutral", "neutral", [], [], [])
+    return expls
+
 
 async def explain_transitions_batch(
     transitions: list[tuple[str, str, float, dict[str, float]]]
 ) -> list[str]:
-    """
-    Explain all transitions in a single LLM call.
+    _, trans, _ = await explain_all([], transitions, "neutral", "neutral", [], [], [])
+    return trans
 
-    Args:
-        transitions: list of (from_title, to_title, score, feature_deltas)
-
-    Returns:
-        list of one-sentence explanation strings — same order as input.
-    """
-    if not transitions:
-        return []
-
-    if _MOCK:
-        return [
-            f'The move from "{frm}" to "{to}" keeps the energy flowing with a smooth blend.'
-            for frm, to, *_ in transitions
-        ]
-
-    lines = []
-    for i, (frm, to, score, feats) in enumerate(transitions):
-        feat_str = ", ".join(f"{k}: {v:+.2f}" for k, v in feats.items())
-        lines.append(f'{i + 1}. "{frm}" → "{to}" (score {score:.2f}). Deltas: {feat_str}')
-
-    user_msg = (
-        "You are a DJ. For each transition below, write exactly one sentence "
-        "describing it from a DJ perspective.\n\n"
-        "Transitions:\n" + "\n".join(lines) + "\n\n"
-        "Return a JSON array of strings, one per transition, same order:\n"
-        '["sentence 1", "sentence 2", ...]\n'
-        "Return ONLY the JSON array, no markdown."
-    )
-
-    response = await _client.messages.create(
-        model=_MODEL,
-        messages=[{"role": "user", "content": user_msg}],
-        temperature=0.4,
-        max_tokens=80 * len(transitions),
-    )
-
-    results = _parse_json(response.content[0].text)
-
-    out: list[str] = []
-    for i in range(len(transitions)):
-        sentence = results[i] if i < len(results) else "Smooth energy flow between tracks."
-        out.append(str(sentence))
-    return out
-
-
-# ── Counterfactual explanation ────────────────────────────────────────────────
 
 async def explain_counterfactual(
     original_ending: str,
@@ -227,35 +251,5 @@ async def explain_counterfactual(
     original_tracks: list,
     alt_tracks: list,
 ) -> str:
-    if _MOCK:
-        return (
-            f"Switching the ending from '{original_ending}' to '{alt_ending}' reshaped "
-            f"positions {changed_positions}, giving the set a different emotional trajectory."
-        )
-
-    lines = []
-    for pos in changed_positions:
-        idx = pos - 1
-        if idx < len(original_tracks) and idx < len(alt_tracks):
-            o = original_tracks[idx]
-            a = alt_tracks[idx]
-            lines.append(
-                f"Position {pos}: '{o.title}' (energy={o.energy}, moods={o.moods}) "
-                f"→ '{a.title}' (energy={a.energy}, moods={a.moods})"
-            )
-
-    track_diff = "\n".join(lines) if lines else "No track-level details available."
-    user_msg = (
-        f"Original playlist ending style: '{original_ending}'. "
-        f"Alternative ending style: '{alt_ending}'.\n\n"
-        f"Track changes:\n{track_diff}\n\n"
-        "Explain in 1-2 sentences why these tracks changed and what the listener "
-        "experiences differently. Be concrete. Return only the explanation, no JSON."
-    )
-    response = await _client.messages.create(
-        model=_MODEL,
-        messages=[{"role": "user", "content": user_msg}],
-        temperature=0.4,
-        max_tokens=150,
-    )
-    return response.content[0].text.strip()
+    _, _, cf = await explain_all([], [], original_ending, alt_ending, changed_positions, original_tracks, alt_tracks)
+    return cf

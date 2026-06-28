@@ -86,6 +86,7 @@ class GraphNode(BaseModel):
     genre: str
     bpm: float = 0.0
     musical_key: str = ""
+    moods: list[str] = []
 
 
 class GraphEdge(BaseModel):
