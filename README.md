@@ -1,4 +1,4 @@
-# Song Aquarium — AI DJ That Explains Itself
+# Song Aquarium — A Setlist That Explains Itself
 
 *By TuneyLoons*
 
