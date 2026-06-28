@@ -59,18 +59,22 @@ function mapGraph(graph, playlist) {
   const scoreById = {}
   playlist.forEach(item => { scoreById[item.track.id] = item.score })
 
-  const nodes = graph.nodes.map(node => ({
-    id: node.id,
-    title: node.label.replace(/^\d+\.\s*/, ''),
-    artist: node.artist,
-    confidence: scoreById[node.id] ?? 0.8,
-    energy: node.energy,
-    genre: node.genre,
-    type: node.type,
-    bpm: node.bpm ?? 0,
-    musical_key: node.musical_key ?? '',
-    moods: node.moods ?? [],
-  }))
+  const nodes = graph.nodes.map(node => {
+    const posMatch = node.label.match(/^(\d+)\./)
+    return {
+      id: node.id,
+      title: node.label.replace(/^\d+\.\s*/, ''),
+      artist: node.artist,
+      confidence: scoreById[node.id] ?? 0.8,
+      energy: node.energy,
+      genre: node.genre,
+      type: node.type,
+      position: posMatch ? parseInt(posMatch[1]) : 0,
+      bpm: node.bpm ?? 0,
+      musical_key: node.musical_key ?? '',
+      moods: node.moods ?? [],
+    }
+  })
 
   const nodeById = {}
   nodes.forEach(n => { nodeById[n.id] = n })

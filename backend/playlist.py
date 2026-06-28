@@ -195,6 +195,8 @@ def build_playlist(
     prev: TrackModels | None = None
 
     for pos in range(n):
+        if not pool:
+            break
         best = max(
             pool,
             key=lambda t: score_track(t, intent, pos, n, prev)[0],

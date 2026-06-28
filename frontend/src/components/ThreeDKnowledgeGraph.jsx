@@ -15,6 +15,15 @@ async function loadForceGraph() {
   return ForceGraph3D
 }
 
+// Linear interpolation between two packed hex colours (e.g. 0xFF0000 → 0x0000FF)
+function lerpHex(a, b, t) {
+  const ar = (a >> 16) & 0xFF, ag = (a >> 8) & 0xFF, ab = a & 0xFF
+  const br = (b >> 16) & 0xFF, bg = (b >> 8) & 0xFF, bb = b & 0xFF
+  return (Math.round(ar + (br - ar) * t) << 16) |
+         (Math.round(ag + (bg - ag) * t) << 8)  |
+          Math.round(ab + (bb - ab) * t)
+}
+
 const ZOOM_IN_DIST  = 150
 const NUM_CURVE_PTS = 40
 const ORBIT_RADIUS  = 90   // world-units between selected node and orbiting neighbors
@@ -209,31 +218,52 @@ export default function ThreeDKnowledgeGraph({
 
   // ── Node visual objects ──────────────────────────────────────────────────
 
-  const nodeVal = useCallback((node) => 4 + (node.confidence || 0.5) * 8, [])
+  // Playlist nodes are larger to visually anchor the setlist
+  const nodeVal = useCallback((node) => (node.type === 'playlist' ? 8 : 3) + (node.confidence || 0.5) * 7, [])
 
   const nodeThreeObject = useCallback((node) => {
-    const radius = Math.cbrt(4 + (node.confidence || 0.5) * 8) * 3.8
-    const group  = new THREE.Group()
-    node._group  = group  // stored so rAF can apply scale spring
+    const isPlaylist = node.type === 'playlist'
+    const nodeSize   = (isPlaylist ? 8 : 3) + (node.confidence || 0.5) * 7
+    const radius     = Math.cbrt(nodeSize) * 3.8
+    const group      = new THREE.Group()
+    node._group      = group
+    node._isPlaylist = isPlaylist
 
-    // Back-face shell adds interior depth illusion
+    // ── D: Energy-based colour gradient ──────────────────────────────────────
+    // Playlist: cool amber (low energy) → hot orange (high energy)
+    // Related:  deep blue (low energy)  → bright cyan (high energy)
+    const e = Math.max(0, Math.min(1, node.energy ?? 0.5))
+    const mainHex = isPlaylist ? lerpHex(0xBB7700, 0xFF6600, e) : lerpHex(0x2255CC, 0x22DDFF, e)
+    const emitHex = isPlaylist ? lerpHex(0x1A0A00, 0x441500, e) : lerpHex(0x000822, 0x003344, e)
+    const rimHex  = isPlaylist ? lerpHex(0xDDAA22, 0xFF9933, e) : lerpHex(0x3366EE, 0x66EEFF, e)
+    const backHex = isPlaylist ? 0x1A1000 : 0x001833
+    const airHex  = isPlaylist ? 0xFFF4CC : 0xEEFFFF
+
+    // Store base colours so the rAF loop can use them for selection-state tinting
+    node._baseColor = mainHex
+    node._baseEmit  = emitHex
+    node._baseRim   = rimHex
+    node._baseOp    = isPlaylist ? 0.32 : 0.14
+    node._baseRimOp = isPlaylist ? 0.18 : 0.08
+
+    // Back-face shell
     group.add(new THREE.Mesh(
       new THREE.SphereGeometry(radius, 32, 32),
-      new THREE.MeshPhongMaterial({ color: 0x001833, transparent: true, opacity: 0.18, side: THREE.BackSide, depthWrite: false }),
+      new THREE.MeshPhongMaterial({ color: backHex, transparent: true, opacity: 0.18, side: THREE.BackSide, depthWrite: false }),
     ))
 
     // Main translucent bubble wall
     const mainMat = new THREE.MeshPhongMaterial({
-      color: 0x47D9FF, emissive: new THREE.Color(0x003344),
-      shininess: 420, specular: new THREE.Color(0xCCFFFF),
-      transparent: true, opacity: 0.20, side: THREE.FrontSide, depthWrite: false,
+      color: mainHex, emissive: new THREE.Color(emitHex),
+      shininess: 420, specular: new THREE.Color(isPlaylist ? 0xFFEEAA : 0xCCFFFF),
+      transparent: true, opacity: node._baseOp, side: THREE.FrontSide, depthWrite: false,
     })
     node._sphereMat = mainMat
     group.add(new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 32), mainMat))
 
     // Rim glow halo
     const rimMat = new THREE.MeshBasicMaterial({
-      color: 0x7FEFFF, transparent: true, opacity: 0.10, side: THREE.BackSide, depthWrite: false,
+      color: rimHex, transparent: true, opacity: node._baseRimOp, side: THREE.BackSide, depthWrite: false,
     })
     node._rimMat = rimMat
     group.add(new THREE.Mesh(new THREE.SphereGeometry(radius * 1.07, 24, 24), rimMat))
@@ -241,33 +271,56 @@ export default function ThreeDKnowledgeGraph({
     // Glossy top-left highlight
     const hl = new THREE.Mesh(
       new THREE.SphereGeometry(radius * 0.25, 16, 16),
-      new THREE.MeshBasicMaterial({ color: 0xFFFFFF, transparent: true, opacity: 0.72, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0xFFFFFF, transparent: true, opacity: isPlaylist ? 0.85 : 0.72, depthWrite: false }),
     )
     hl.position.set(-radius * 0.36, radius * 0.38, radius * 0.68)
     hl.renderOrder = 2
     group.add(hl)
 
-    // Inner air bubble (Y2K detail)
+    // Inner air bubble
     const air = new THREE.Mesh(
       new THREE.SphereGeometry(radius * 0.10, 8, 8),
-      new THREE.MeshBasicMaterial({ color: 0xEEFFFF, transparent: true, opacity: 0.42, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: airHex, transparent: true, opacity: 0.42, depthWrite: false }),
     )
     air.position.set(radius * 0.28, -radius * 0.28, radius * 0.50)
     group.add(air)
 
-    // Sprites
     const applyOverlay = s => {
       s.renderOrder = 999
       s.material.depthTest = false; s.material.depthWrite = false; s.material.needsUpdate = true
     }
 
+    // ── B: Position number badge for setlist tracks ───────────────────────────
+    if (isPlaylist && node.position) {
+      const badge = new SpriteText(`${node.position}`)
+      Object.assign(badge, {
+        color: 'rgba(255,255,255,0.97)',
+        textHeight: 3.2,
+        backgroundColor: `rgba(${(mainHex >> 16) & 0xFF},${(mainHex >> 8) & 0xFF},${mainHex & 0xFF},0.88)`,
+        padding: [1.5, 4],
+        borderRadius: 99,
+        fontFace: 'Comfortaa, Nunito, sans-serif',
+      })
+      badge.renderOrder = 1000
+      badge.material.depthTest = false
+      badge.material.depthWrite = false
+      badge.position.set(radius * 0.72, radius * 0.88, radius * 0.52)
+      group.add(badge)
+    }
+
+    // Sprites
+    const farColor  = isPlaylist ? 'rgba(255,240,180,0.95)' : 'rgba(180,220,255,0.72)'
+    const nearColor = isPlaylist ? 'rgba(255,245,200,0.97)' : 'rgba(210,240,255,0.92)'
+    const farBg     = isPlaylist ? 'rgba(30,15,0,0.68)'     : 'rgba(0,14,38,0.52)'
+    const nearBg    = isPlaylist ? 'rgba(30,15,0,0.80)'     : 'rgba(0,14,38,0.76)'
+
     const farSprite = new SpriteText(node.title || node.id)
-    Object.assign(farSprite, { color: 'rgba(210,244,255,0.92)', textHeight: 4, backgroundColor: 'rgba(0,14,38,0.60)', padding: 2, borderRadius: 3, fontFace: 'Comfortaa, Nunito, sans-serif' })
+    Object.assign(farSprite, { color: farColor, textHeight: isPlaylist ? 4.5 : 3, backgroundColor: farBg, padding: 2, borderRadius: 3, fontFace: 'Comfortaa, Nunito, sans-serif' })
     applyOverlay(farSprite)
 
     const meta = [node.bpm ? `${Math.round(node.bpm)} BPM` : null, node.musical_key || null].filter(Boolean).join('  ·  ')
     const nearSprite = new SpriteText(meta ? `${node.title || node.id}\n${meta}` : (node.title || node.id))
-    Object.assign(nearSprite, { color: 'rgba(220,248,255,0.97)', textHeight: 4, backgroundColor: 'rgba(0,14,38,0.76)', padding: 3, borderRadius: 4, fontFace: 'Comfortaa, Nunito, sans-serif', visible: false })
+    Object.assign(nearSprite, { color: nearColor, textHeight: 4, backgroundColor: nearBg, padding: 3, borderRadius: 4, fontFace: 'Comfortaa, Nunito, sans-serif', visible: false })
     applyOverlay(nearSprite)
 
     node._farSprite = farSprite; node._nearSprite = nearSprite
@@ -288,6 +341,7 @@ export default function ThreeDKnowledgeGraph({
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     const mat = new THREE.LineBasicMaterial({ color: 0x7FEFFF, transparent: true, opacity: 0.22, depthWrite: false })
     link._arcMat = mat
+    link._strength = link.strength ?? 0.5   // C: cached for rAF opacity scaling
     const line = new THREE.Line(geo, mat)
     link._arcLine = line
 
@@ -395,38 +449,55 @@ export default function ThreeDKnowledgeGraph({
               if (near) node._nearSprite.textHeight = Math.max(1.5, (dist / ZOOM_IN_DIST) * 5)
             }
 
-            // ── Sphere material per selection state ──────────────────────
+            // ── Sphere material per selection state (D: uses energy colour) ─
             if (node._sphereMat && node._rimMat) {
+              const bc = node._baseColor ?? (node._isPlaylist ? 0xFFCC55 : 0x47D9FF)
+              const be = node._baseEmit  ?? 0x003344
+              const br = node._baseRim   ?? 0x7FEFFF
+              const bo = node._baseOp    ?? (node._isPlaylist ? 0.32 : 0.14)
+              const bro = node._baseRimOp ?? (node._isPlaylist ? 0.18 : 0.08)
               if (!selId) {
-                node._sphereMat.color.setHex(0x47D9FF); node._sphereMat.opacity = 0.20
-                node._sphereMat.emissive.setHex(0x003344); node._rimMat.opacity = 0.10
+                node._sphereMat.color.setHex(bc); node._sphereMat.opacity = bo
+                node._sphereMat.emissive.setHex(be); node._rimMat.opacity = bro
               } else if (node.id === selId) {
-                node._sphereMat.color.setHex(0x7FEFFF); node._sphereMat.opacity = 0.55
-                node._sphereMat.emissive.setHex(0x006677); node._rimMat.opacity = 0.42
+                // Selected: brighten the energy colour rather than override it
+                node._sphereMat.color.setHex(lerpHex(bc, 0xFFFFFF, 0.25))
+                node._sphereMat.opacity = 0.68
+                node._sphereMat.emissive.setHex(lerpHex(be, 0x335555, 0.5))
+                node._rimMat.opacity = 0.55
               } else if (nbrs.has(node.id)) {
-                node._sphereMat.color.setHex(0x47D9FF); node._sphereMat.opacity = 0.28
-                node._sphereMat.emissive.setHex(0x002233); node._rimMat.opacity = 0.14
+                node._sphereMat.color.setHex(bc); node._sphereMat.opacity = bo + 0.12
+                node._sphereMat.emissive.setHex(be); node._rimMat.opacity = bro + 0.08
               } else {
-                node._sphereMat.color.setHex(0x001133); node._sphereMat.opacity = 0.06
-                node._sphereMat.emissive.setHex(0x000000); node._rimMat.opacity = 0.02
+                node._sphereMat.color.setHex(0x111111); node._sphereMat.opacity = 0.04
+                node._sphereMat.emissive.setHex(0x000000); node._rimMat.opacity = 0.01
               }
             }
           })
 
           // ── Arc edge colours + label visibility ───────────────────────
+          // C: opacity scales with transition_score (strength) so strong
+          //    transitions read as visually thicker / more prominent arcs.
           fgData.links.forEach(link => {
             if (!link._arcMat) return
             const src = typeof link.source === 'object' ? link.source.id : link.source
             const tgt = typeof link.target === 'object' ? link.target.id : link.target
             const key = `${src}->${tgt}`
+            const str = link._strength ?? 0.5  // 0–1
             if (!selId) {
-              link._arcMat.color.setHex(0x7FEFFF); link._arcMat.opacity = 0.22
+              link._arcMat.color.setHex(0x7FEFFF)
+              link._arcMat.opacity = 0.06 + str * 0.24   // 0.06 – 0.30
             } else if (connEdges.has(key)) {
-              link._arcMat.color.setHex(0xC9F7FF); link._arcMat.opacity = 0.90
+              link._arcMat.color.setHex(0xC9F7FF)
+              link._arcMat.opacity = 0.50 + str * 0.45   // 0.50 – 0.95
             } else {
-              link._arcMat.color.setHex(0x7FEFFF); link._arcMat.opacity = 0.04
+              link._arcMat.color.setHex(0x7FEFFF)
+              link._arcMat.opacity = 0.01 + str * 0.03   // nearly invisible
             }
-            if (link._labelSprite) link._labelSprite.visible = showEdgeLabelsRef.current
+            // Show label only when toggle is on AND (no selection OR this edge is connected)
+            if (link._labelSprite) {
+              link._labelSprite.visible = showEdgeLabelsRef.current && (!selId || connEdges.has(key))
+            }
           })
         }
       }
