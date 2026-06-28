@@ -143,21 +143,34 @@ def find_changed_positions(
 def build_alternative_playlist(
     candidates: list[TrackModels],
     intent: ExtractedIntent,
+    original_tracks: list[TrackModels] | None = None,
 ) -> tuple[list[tuple[TrackModels, float, dict[str, float], float]], ExtractedIntent, list[int]]:
     """
     Generate a counterfactual playlist by perturbing the intent.
+
+    Args:
+        candidates:      Full candidate pool.
+        intent:          Original intent.
+        original_tracks: Pre-built main playlist tracks (avoids a redundant
+                         build_playlist call). If None, built internally.
 
     Returns:
         (alternative_playlist_items, alt_intent, changed_positions)
     """
     alt_intent = build_alternative_intent(intent)
-    original_playlist = build_playlist(candidates, intent)
-    original_tracks = [t for t, *_ in original_playlist]
 
-    # Exclude main playlist tracks so the alternative is always meaningfully different
+    if original_tracks is None:
+        original_tracks = [t for t, *_ in build_playlist(candidates, intent)]
+
+    # Try first with used_ids to guarantee different tracks
     used_ids = {t.id for t in original_tracks}
     alt_playlist = build_playlist(candidates, alt_intent, used_ids=used_ids)
-    alt_tracks = [t for t, *_ in alt_playlist]
 
+    # Fallback: if exclusion leaves too few tracks, build without it — the
+    # perturbed intent alone should produce a meaningfully different result
+    if len(alt_playlist) < len(original_tracks):
+        alt_playlist = build_playlist(candidates, alt_intent)
+
+    alt_tracks = [t for t, *_ in alt_playlist]
     changed = find_changed_positions(original_tracks, alt_tracks)
     return alt_playlist, alt_intent, changed

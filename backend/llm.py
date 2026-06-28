@@ -11,6 +11,7 @@ Total LLM calls per request: 4
 The LLM NEVER invents songs — it only explains deterministic scores.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -20,6 +21,24 @@ from schemas import ExtractedIntent, MetadataFilter
 _client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"), max_retries=4)
 _MODEL = "claude-haiku-4-5-20251001"
 _MOCK = os.getenv("LLM_MOCK", "").lower() in ("1", "true", "yes")
+
+
+async def _with_rate_limit_retry(coro_fn, max_extra_attempts: int = 4, base_delay: float = 15.0):
+    """
+    Call coro_fn() and retry on RateLimitError with linear backoff.
+
+    The Anthropic SDK already retries (max_retries=4) for short bursts.
+    This outer loop handles sustained rate pressure (5 RPM limit) by waiting
+    longer between attempts — up to ~60 s — before giving up.
+    """
+    for attempt in range(max_extra_attempts + 1):
+        try:
+            return await coro_fn()
+        except anthropic.RateLimitError:
+            if attempt == max_extra_attempts:
+                raise
+            wait = base_delay * (attempt + 1)   # 15 s, 30 s, 45 s, 60 s
+            await asyncio.sleep(wait)
 
 
 # ── JSON helpers ──────────────────────────────────────────────────────────────
@@ -196,11 +215,13 @@ async def explain_all(
         '}'
     )
 
-    response = await _client.messages.create(
-        model=_MODEL,
-        messages=[{"role": "user", "content": user_msg}],
-        temperature=0.3,
-        max_tokens=150 * n_tracks + 80 * len(transitions) + 150,
+    response = await _with_rate_limit_retry(
+        lambda: _client.messages.create(
+            model=_MODEL,
+            messages=[{"role": "user", "content": user_msg}],
+            temperature=0.3,
+            max_tokens=150 * n_tracks + 80 * len(transitions) + 150,
+        )
     )
 
     result = _parse_json(response.content[0].text)

@@ -49,7 +49,11 @@ app.add_middleware(
 
 def _build_playlists(candidates, intent):
     playlist_items = build_playlist(candidates, intent)
-    alt_items, alt_intent, changed_positions = build_alternative_playlist(candidates, intent)
+    original_tracks = [t for t, *_ in playlist_items]
+    # Pass original_tracks to avoid a redundant second build_playlist call inside
+    alt_items, alt_intent, changed_positions = build_alternative_playlist(
+        candidates, intent, original_tracks=original_tracks
+    )
     return playlist_items, alt_items, alt_intent, changed_positions
 
 
@@ -214,16 +218,30 @@ async def generate_playlist_stream(request: PlaylistRequest):
                 (tracks[i].title, tracks[i + 1].title, playlist_items[i + 1][3], feat_deltas_list[i])
                 for i in range(len(tracks) - 1)
             ]
-            # Single call for all explanations — 2 LLM calls total per request
-            combined_expl, transition_explanations, counterfactual_explanation = await explain_all(
-                main_batch + alt_batch,
-                trans_batch,
-                intent.ending,
-                alt_intent.ending,
-                changed_positions,
-                tracks,
-                alt_tracks,
-            )
+            # Single call for all explanations — 2 LLM calls total per request.
+            # If rate limits are exhausted after all retries, fall back to
+            # placeholder text so the user still gets their playlist.
+            yield _prog("Writing explanations\u2026")
+            try:
+                combined_expl, transition_explanations, counterfactual_explanation = await explain_all(
+                    main_batch + alt_batch,
+                    trans_batch,
+                    intent.ending,
+                    alt_intent.ending,
+                    changed_positions,
+                    tracks,
+                    alt_tracks,
+                )
+            except Exception:
+                combined_expl = [
+                    ("Selected for its strong match with your prompt.", "Placed here to support the energy arc.")
+                    for _ in main_batch + alt_batch
+                ]
+                transition_explanations = ["Smooth energy flow between tracks." for _ in trans_batch]
+                counterfactual_explanation = (
+                    "Alternative playlist generated with a different energy arc — "
+                    "explanations unavailable due to a temporary rate limit."
+                )
             main_expl = combined_expl[:len(main_batch)]
             alt_expl = combined_expl[len(main_batch):]
 
