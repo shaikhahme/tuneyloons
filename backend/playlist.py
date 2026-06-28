@@ -189,8 +189,8 @@ def build_playlist(
     Returns:
         List of (track, final_score, feature_contributions, transition_score).
     """
-    n = min(intent.num_tracks, len(candidates))
     pool = [t for t in candidates if not used_ids or t.id not in used_ids]
+    n = min(intent.num_tracks, len(pool))
     selected: list[tuple[TrackModels, float, dict[str, float], float]] = []
     prev: TrackModels | None = None
 

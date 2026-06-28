@@ -56,8 +56,6 @@ export default function ThreeDKnowledgeGraph({
   const selectedIdRef     = useRef(selectedId)
   const connectedEdgesRef = useRef(new Set())
   const neighborIdsRef    = useRef(new Set())
-
-  // rAF-readable ref for edge label visibility
   const showEdgeLabelsRef = useRef(showEdgeLabels)
 
   // Spring state — mutated every frame by the rAF loop, set by the orbit effect
@@ -341,7 +339,7 @@ export default function ThreeDKnowledgeGraph({
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     const mat = new THREE.LineBasicMaterial({ color: 0x7FEFFF, transparent: true, opacity: 0.22, depthWrite: false })
     link._arcMat = mat
-    link._strength = link.strength ?? 0.5   // C: cached for rAF opacity scaling
+    link._strength = link.strength ?? 0.5
     const line = new THREE.Line(geo, mat)
     link._arcLine = line
 
@@ -476,8 +474,8 @@ export default function ThreeDKnowledgeGraph({
           })
 
           // ── Arc edge colours + label visibility ───────────────────────
-          // C: opacity scales with transition_score (strength) so strong
-          //    transitions read as visually thicker / more prominent arcs.
+          // opacity scales with transition_score (strength) so strong
+          // transitions read as visually thicker / more prominent arcs.
           fgData.links.forEach(link => {
             if (!link._arcMat) return
             const src = typeof link.source === 'object' ? link.source.id : link.source
@@ -486,15 +484,14 @@ export default function ThreeDKnowledgeGraph({
             const str = link._strength ?? 0.5  // 0–1
             if (!selId) {
               link._arcMat.color.setHex(0x7FEFFF)
-              link._arcMat.opacity = 0.06 + str * 0.24   // 0.06 – 0.30
+              link._arcMat.opacity = 0.06 + str * 0.24
             } else if (connEdges.has(key)) {
               link._arcMat.color.setHex(0xC9F7FF)
-              link._arcMat.opacity = 0.50 + str * 0.45   // 0.50 – 0.95
+              link._arcMat.opacity = 0.50 + str * 0.45
             } else {
               link._arcMat.color.setHex(0x7FEFFF)
-              link._arcMat.opacity = 0.01 + str * 0.03   // nearly invisible
+              link._arcMat.opacity = 0.01 + str * 0.03
             }
-            // Show label only when toggle is on AND (no selection OR this edge is connected)
             if (link._labelSprite) {
               link._labelSprite.visible = showEdgeLabelsRef.current && (!selId || connEdges.has(key))
             }
