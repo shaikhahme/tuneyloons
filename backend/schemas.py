@@ -51,6 +51,11 @@ class ExtractedIntent(BaseModel):
     ending: str                           # "bang" | "calm" | "neutral"
     num_tracks: int
     metadata_filter: MetadataFilter
+    # Cyanite tag fields — used to build the metadataFilter for the search API
+    mood_tags: list[str] = []             # MoodSimpleV2 tags e.g. ["calm", "energetic"]
+    genre_tags: list[str] = []            # MainGenreV2 tags e.g. ["electronic", "pop"]
+    min_bpm: int | None = None
+    max_bpm: int | None = None
 
 
 # ── Scoring internals ─────────────────────────────────────────────────────────

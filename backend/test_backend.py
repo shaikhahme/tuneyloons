@@ -14,8 +14,9 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 # ── Env must be set before importing app modules ──────────────────────────────
-os.environ.setdefault("OPENAI_API_KEY", "test-key")
-os.environ.setdefault("CYANITE_API_KEY", "test-key")
+os.environ.setdefault("ANTHROPIC_API_KEY", "test-key")
+os.environ.setdefault("cyaniteApiKey", "test-key")
+os.environ.setdefault("LLM_MOCK", "true")  # never hit the real Anthropic API in tests
 
 from fastapi.testclient import TestClient
 
@@ -112,7 +113,7 @@ class TestCyaniteMock:
 
     def test_track_fields_populated(self):
         t = search_tracks("indie", limit=1)[0]
-        assert t.id.startswith("jamendo_")
+        assert t.id.startswith("libtr_mock_")
         assert 0 < len(t.title)
         assert 0 < len(t.artist)
         assert 0.0 <= t.energy <= 1.0
@@ -137,7 +138,7 @@ class TestCyaniteMock:
         t = search_tracks("pop", limit=1)[0]
         similar = fetch_similar_tracks(t.id, limit=3)
         for s in similar:
-            assert s.id.startswith("jamendo_")
+            assert s.id.startswith("libtr_mock_")
             assert 0.0 <= s.energy <= 1.0
 
     def test_similar_scores_descend(self):
@@ -467,7 +468,7 @@ class TestGraph:
 # 8. FastAPI endpoint — /generate_playlist (LLM patched)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _mock_extract_intent(prompt: str):
+async def _mock_extract_intent(prompt: str):
     return ExtractedIntent(
         query="girly pop",
         duration_seconds=600,
@@ -477,31 +478,31 @@ def _mock_extract_intent(prompt: str):
     )
 
 
-def _mock_explain_shap(title, shap_vals, pos, total):
-    return (
-        f"Selected because of its energy and mood match.",
-        f"Position {pos} of {total} suits its vibe.",
-    )
+async def _mock_explain_shap_batch(tracks):
+    return [
+        ("Selected because of its energy and mood match.", f"Position {pos} of {total} suits its vibe.")
+        for _, _, pos, total in tracks
+    ]
 
 
-def _mock_explain_counterfactual(orig, alt, positions):
+async def _mock_explain_counterfactual(orig, alt, positions):
     return f"Switching from '{orig}' to '{alt}' changed positions {positions}."
 
 
-def _mock_explain_transition(a, b, score, feats):
-    return f"Smooth move from {a} to {b}."
+async def _mock_explain_transitions_batch(transitions):
+    return [f"Smooth move from {a} to {b}." for a, b, *_ in transitions]
 
 
 class TestEndpoint:
 
     @pytest.fixture(autouse=True)
     def patch_llm(self):
-        """Patch all LLM calls so the endpoint runs without OpenAI."""
+        """Patch all LLM calls so the endpoint runs without Anthropic API."""
         with (
             patch("app.extract_intent", side_effect=_mock_extract_intent),
-            patch("app.explain_shap", side_effect=_mock_explain_shap),
+            patch("app.explain_shap_batch", side_effect=_mock_explain_shap_batch),
             patch("app.explain_counterfactual", side_effect=_mock_explain_counterfactual),
-            patch("app.explain_transition", side_effect=_mock_explain_transition),
+            patch("app.explain_transitions_batch", side_effect=_mock_explain_transitions_batch),
         ):
             yield
 

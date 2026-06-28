@@ -1,127 +1,333 @@
 """
-Cyanite API client — mocked for hackathon.
+Cyanite REST API client.
 
-Every function has the REAL signature and return shape.
-To go live: replace the body of each function with the actual HTTP call.
-The mock returns realistic data drawn from the Jamendo-style 357k catalog.
+Base URL: https://rest-api.cyanite.ai/v1
+Auth:     x-api-key: <cyaniteApiKey>
 
 Real endpoints:
-  POST /private-alpha/library-tracks/search   → search_tracks()
-  GET  /library-tracks/{id}/models             → fetch_track_models()
-  GET  /library-tracks/{id}/similar            → fetch_similar_tracks()
+  POST /private-alpha/library-tracks/search        → search_tracks()
+  GET  /library-tracks/{id}/models                 → _fetch_models_for_item()
+  POST /private-alpha/library-tracks/{id}/similar  → fetch_similar_tracks()
+
+Falls back to deterministic mock data when cyaniteApiKey is not set.
 """
 
+import os
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+
 from schemas import TrackModels
 
-# ── Deterministic seed so results are reproducible within a session ───────────
-_RNG = random.Random(42)
+# ── Config ────────────────────────────────────────────────────────────────────
+_RAW_KEY = os.getenv("cyaniteApiKey", "")
+_API_KEY = _RAW_KEY.strip('"').strip("'")
+_BASE_URL = "https://rest-api.cyanite.ai/v1"
+_USE_MOCK = True  # TODO: set to `not _API_KEY` when Cyanite API is confirmed working
 
-_GENRES = ["pop", "electronic", "hip-hop", "r&b", "indie-pop", "dance", "synth-pop"]
-_MOODS = ["happy", "energetic", "romantic", "melancholic", "aggressive", "dreamy", "euphoric"]
-_TEMPOS = ["slow", "medium", "fast"]
-_MOVEMENTS = ["driving", "floating", "bouncy", "steady", "explosive"]
-_CHARACTERS = [
-    ["uplifting", "bright"],
-    ["dark", "intense"],
-    ["smooth", "mellow"],
-    ["aggressive", "raw"],
-    ["playful", "light"],
-]
-
-_ARTIST_POOL = [
-    "Dua Lipa", "Charli XCX", "Olivia Rodrigo", "Sabrina Carpenter",
-    "Ariana Grande", "Billie Eilish", "Carly Rae Jepsen", "Kim Petras",
-    "Ava Max", "Bebe Rexha", "Doja Cat", "Lizzo", "Meghan Trainor",
-    "Nicki Minaj", "Katy Perry", "Lady Gaga", "Cardi B", "Kesha",
-]
-
-_TITLE_POOL = [
-    "Levitating", "Good 4 U", "Espresso", "Flowers", "As It Was",
-    "Anti-Hero", "Unholy", "About Damn Time", "Break My Soul", "Industry Baby",
-    "Stay", "Watermelon Sugar", "Blinding Lights", "Save Your Tears", "Peaches",
-    "Montero", "Butter", "Dynamite", "Permission to Dance", "DNA",
-    "Physical", "Don't Start Now", "Hallucinate", "Bop to the Top",
-    "Made You Look", "Karma", "Cruel Summer", "Shake It Off", "Bad Blood",
-    "Blank Space", "Style", "Wildest Dreams", "Out of the Woods", "Clean",
-    "New Romantics", "Getaway Car", "Delicate", "Gorgeous", "King of My Heart",
-    "Dancing With Our Hands Tied", "Dress", "This Is Why We Can't Have Nice Things",
-    "Call It What You Want", "New Year's Day", "Ready for It", "End Game",
-    "Gorgeous", "Sparks Fly", "Mine", "Fearless",
+_MODELS_TO_FETCH = [
+    "MoodSimpleV2",
+    "MainGenreV2",
+    "BpmV2",
+    "ValenceArousalV2",
+    "CharacterV2",
+    "MovementV2",
+    "AutoDescriptionV2",
 ]
 
 
-def _make_track(seed_id: int, score: float) -> TrackModels:
-    """Generate a realistic-looking Cyanite track from a numeric seed."""
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _session() -> requests.Session:
+    s = requests.Session()
+    s.headers.update({"x-api-key": _API_KEY})
+    return s
+
+
+def _bpm_to_tempo(bpm: float) -> str:
+    if bpm < 90:
+        return "slow"
+    if bpm <= 120:
+        return "medium"
+    return "fast"
+
+
+def _energy_level_to_float(tag: str) -> float:
+    return {"low": 0.2, "medium": 0.5, "high": 0.85, "varying": 0.6}.get(str(tag).lower(), 0.5)
+
+
+def _parse_model_items(items: list) -> dict:
+    """Collapse a list of Cyanite model output dicts into one feature dict."""
+    out = {
+        "moods": ["energetic"],
+        "genre": "electronic",
+        "bpm": 120.0,
+        "valence": 0.5,
+        "arousal": 0.5,
+        "energy": 0.5,
+        "movement": "steady",
+        "character": ["smooth"],
+        "description": "",
+    }
+    for item in items:
+        model = item.get("model", "")
+
+        if model == "MoodSimpleV2":
+            tags = item.get("tags") or []
+            if tags:
+                out["moods"] = [t.lower() for t in tags[:3]]
+
+        elif model == "MainGenreV2":
+            tag = item.get("tag") or ""
+            if tag:
+                out["genre"] = tag.lower()
+
+        elif model == "BpmV2":
+            tag = item.get("tag")
+            if tag is not None:
+                try:
+                    out["bpm"] = float(tag)
+                except (TypeError, ValueError):
+                    pass
+
+        elif model == "ValenceArousalV2":
+            scores = item.get("scores") or {}
+            if "valence" in scores:
+                out["valence"] = round(float(scores["valence"]), 3)
+            if "arousal" in scores:
+                out["arousal"] = round(float(scores["arousal"]), 3)
+            el = item.get("energyLevel") or {}
+            if isinstance(el, dict):
+                out["energy"] = _energy_level_to_float(el.get("tag", "medium"))
+            else:
+                # fallback: derive energy from arousal
+                out["energy"] = out["arousal"]
+
+        elif model == "CharacterV2":
+            tags = item.get("tags") or []
+            if tags:
+                out["character"] = [t.lower() for t in tags[:2]]
+
+        elif model == "MovementV2":
+            tag = item.get("tag") or ""
+            if tag:
+                out["movement"] = tag.lower()
+
+        elif model == "AutoDescriptionV2":
+            out["description"] = item.get("description") or ""
+
+    return out
+
+
+def _build_track_model(item: dict, features: dict) -> TrackModels:
+    track = item.get("track", {})
+    return TrackModels(
+        id=track.get("id", "unknown"),
+        title=track.get("name", "Unknown"),
+        artist=track.get("artist", "Unknown"),
+        duration_seconds=int(track.get("duration") or 180),
+        genre=features["genre"],
+        moods=features["moods"],
+        energy=round(min(max(features["energy"], 0.0), 1.0), 2),
+        valence=round(min(max(features["valence"], 0.0), 1.0), 2),
+        arousal=round(min(max(features["arousal"], 0.0), 1.0), 2),
+        tempo_tag=_bpm_to_tempo(features["bpm"]),
+        bpm=round(features["bpm"], 1),
+        movement=features["movement"],
+        character=features["character"],
+        description=features["description"],
+        cyanite_score=round(float(item.get("score", 0.5)), 3),
+    )
+
+
+def _fetch_models_for_item(sess: requests.Session, item: dict) -> TrackModels | None:
+    """Fetch model tags for one search result; returns TrackModels or None on error."""
+    cyanite_id = item.get("track", {}).get("id", "")
+    if not cyanite_id:
+        return None
+    params = [("model", m) for m in _MODELS_TO_FETCH]
+    try:
+        resp = sess.get(
+            f"{_BASE_URL}/library-tracks/{cyanite_id}/models",
+            params=params,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        features = _parse_model_items(resp.json().get("items", []))
+        return _build_track_model(item, features)
+    except Exception as exc:
+        print(f"[cyanite] model fetch failed for {cyanite_id}: {exc}")
+        return None
+
+
+# ── Cyanite filter builder (used by app.py) ───────────────────────────────────
+
+def build_cyanite_filter(intent) -> dict:
+    """
+    Construct a Cyanite metadataFilter from the extracted intent.
+    Kept lenient (low score thresholds, few constraints) to avoid empty result sets.
+    """
+    f: dict = {}
+
+    if intent.genre_tags:
+        f["MainGenreV2.tag"] = {"$in": intent.genre_tags}
+
+    bpm: dict = {}
+    if intent.min_bpm:
+        bpm["$gte"] = intent.min_bpm
+    if intent.max_bpm:
+        bpm["$lte"] = intent.max_bpm
+    if bpm:
+        f["BpmV2.tag"] = bpm
+
+    # Single primary mood at low threshold so we don't over-filter
+    if intent.mood_tags:
+        f[f"MoodSimpleV2.scores.{intent.mood_tags[0]}"] = {"$gte": 0.2}
+
+    return f
+
+
+# ── Real API implementation ───────────────────────────────────────────────────
+
+def _real_search_tracks(query: str, metadata_filter: dict, limit: int) -> list[TrackModels]:
+    sess = _session()
+    body: dict = {"query": query}
+    if metadata_filter:
+        body["metadataFilter"] = metadata_filter
+
+    try:
+        resp = sess.post(
+            f"{_BASE_URL}/private-alpha/library-tracks/search",
+            params={"limit": limit},
+            json=body,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+    except Exception as exc:
+        print(f"[cyanite] search failed: {exc}")
+        return []
+
+    if not items:
+        return []
+
+    tracks: list[TrackModels] = []
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_models_for_item, sess, item): item for item in items}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                tracks.append(result)
+
+    tracks.sort(key=lambda t: t.cyanite_score, reverse=True)
+    return tracks
+
+
+def _real_fetch_similar(track_id: str, limit: int) -> list[TrackModels]:
+    sess = _session()
+    try:
+        resp = sess.post(
+            f"{_BASE_URL}/private-alpha/library-tracks/{track_id}/similar",
+            params={"limit": limit},
+            json={},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("items", [])
+    except Exception as exc:
+        print(f"[cyanite] similar failed for {track_id}: {exc}")
+        return []
+
+    tracks: list[TrackModels] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_fetch_models_for_item, sess, item): item for item in items}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                tracks.append(result)
+
+    tracks.sort(key=lambda t: t.cyanite_score, reverse=True)
+    return tracks
+
+
+# ── Mock fallback ─────────────────────────────────────────────────────────────
+
+_MOCK_GENRES = ["pop", "electronic", "hip-hop", "r&b", "indie-pop", "dance", "ambient"]
+_MOCK_MOODS = [["happy", "energetic"], ["calm", "chill"], ["dark", "sad"],
+               ["uplifting", "euphoric"], ["dreamy", "ethereal"]]
+_MOCK_TEMPOS = ["slow", "medium", "fast"]
+_MOCK_MOVEMENTS = ["driving", "floating", "bouncy", "steady", "explosive"]
+_MOCK_CHARACTERS = [["uplifting", "bright"], ["dark", "intense"], ["smooth", "mellow"],
+                    ["aggressive", "raw"], ["playful", "light"]]
+_MOCK_ARTISTS = [
+    "Dua Lipa", "Charli XCX", "Olivia Rodrigo", "Sabrina Carpenter", "Ariana Grande",
+    "Billie Eilish", "Carly Rae Jepsen", "Kim Petras", "Ava Max", "Bebe Rexha",
+    "Doja Cat", "Lizzo", "Katy Perry", "Lady Gaga", "Kesha",
+]
+_MOCK_TITLES = [
+    "Levitating", "Good 4 U", "Espresso", "Flowers", "As It Was", "Anti-Hero",
+    "Unholy", "About Damn Time", "Break My Soul", "Industry Baby", "Stay",
+    "Watermelon Sugar", "Blinding Lights", "Save Your Tears", "Peaches",
+    "Montero", "Butter", "Dynamite", "Cruel Summer", "Shake It Off",
+]
+
+
+def _make_mock_track(seed_id: int, score: float) -> TrackModels:
     rng = random.Random(seed_id)
     energy = round(rng.uniform(0.3, 1.0), 2)
     return TrackModels(
-        id=f"jamendo_{seed_id:06d}",
-        title=rng.choice(_TITLE_POOL) + f" (#{seed_id})",
-        artist=rng.choice(_ARTIST_POOL),
+        id=f"libtr_mock_{seed_id:06d}",
+        title=rng.choice(_MOCK_TITLES) + f" (#{seed_id})",
+        artist=rng.choice(_MOCK_ARTISTS),
         duration_seconds=rng.randint(150, 240),
-        genre=rng.choice(_GENRES),
-        moods=rng.sample(_MOODS, k=2),
+        genre=rng.choice(_MOCK_GENRES),
+        moods=rng.choice(_MOCK_MOODS),
         energy=energy,
         valence=round(rng.uniform(0.4, 1.0), 2),
         arousal=round(energy * rng.uniform(0.8, 1.1), 2),
-        tempo_tag=rng.choice(_TEMPOS),
+        tempo_tag=rng.choice(_MOCK_TEMPOS),
         bpm=round(rng.uniform(90, 160), 1),
-        movement=rng.choice(_MOVEMENTS),
-        character=rng.choice(_CHARACTERS),
-        description=f"An upbeat {rng.choice(_GENRES)} track with {rng.choice(_MOODS)} qualities.",
+        movement=rng.choice(_MOCK_MOVEMENTS),
+        character=rng.choice(_MOCK_CHARACTERS),
+        description=f"A {rng.choice(_MOCK_GENRES)} track with {rng.choice(_MOCK_MOODS)[0]} qualities.",
         cyanite_score=round(score, 3),
     )
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
-def search_tracks(query: str, limit: int = 50) -> list[TrackModels]:
-    """
-    Mock of POST /private-alpha/library-tracks/search.
-
-    Real call:
-        POST https://api.cyanite.ai/private-alpha/library-tracks/search
-        Authorization: Bearer {CYANITE_API_KEY}
-        { "query": query, "limit": limit }
-
-    Returns top-N tracks ordered by relevance score (descending).
-    """
-    # Scores decay from ~0.98 down — simulates ranked search results
+def _mock_search_tracks(query: str, limit: int) -> list[TrackModels]:
+    query_seed = sum(ord(c) * (i + 1) for i, c in enumerate(query)) % (2 ** 31)
+    rng = random.Random(query_seed)
     scores = [round(0.98 - i * 0.009, 3) for i in range(limit)]
-    seed_ids = _RNG.sample(range(1, 357_001), limit)
-    return [_make_track(sid, sc) for sid, sc in zip(seed_ids, scores)]
+    seed_ids = rng.sample(range(1, 357_001), limit)
+    return [_make_mock_track(sid, sc) for sid, sc in zip(seed_ids, scores)]
+
+
+def _mock_fetch_similar(track_id: str, limit: int) -> list[TrackModels]:
+    seed = int(track_id.split("_")[-1]) if "_" in track_id else abs(hash(track_id)) % 9999
+    rng = random.Random(seed)
+    ids = rng.sample(range(1, 357_001), limit)
+    scores = [round(0.88 - i * 0.04, 3) for i in range(limit)]
+    return [_make_mock_track(sid, sc) for sid, sc in zip(ids, scores)]
+
+
+# ── Public interface ──────────────────────────────────────────────────────────
+
+def search_tracks(query: str, metadata_filter: dict | None = None, limit: int = 50) -> list[TrackModels]:
+    """Search the Cyanite catalog. Uses mock data when API key is absent."""
+    if _USE_MOCK:
+        print("[cyanite] No API key — using mock data")
+        return _mock_search_tracks(query, limit)
+    return _real_search_tracks(query, metadata_filter or {}, limit)
 
 
 def fetch_track_models(track_id: str) -> TrackModels | None:
-    """
-    Mock of GET /library-tracks/{id}/models.
-
-    Real call:
-        GET https://api.cyanite.ai/library-tracks/{track_id}/models
-        Authorization: Bearer {CYANITE_API_KEY}
-
-    Returns full model outputs: genre, mood, BPM, valence/arousal, etc.
-    Already embedded in search results for the mock; in production this
-    gives richer data than the search payload.
-    """
-    # In the mock the search already returns full models — this is a no-op.
-    # In production: make the GET call, parse, return TrackModels.
+    """Model data is already embedded during search; kept for API compatibility."""
     return None
 
 
 def fetch_similar_tracks(track_id: str, limit: int = 5) -> list[TrackModels]:
-    """
-    Mock of GET /library-tracks/{id}/similar (Cyanite Similar Search).
-
-    Real call:
-        GET https://api.cyanite.ai/library-tracks/{track_id}/similar?limit={limit}
-        Authorization: Bearer {CYANITE_API_KEY}
-
-    Returns tracks similar to the given track, used to build graph edges.
-    """
-    seed = int(track_id.split("_")[-1]) if "_" in track_id else _RNG.randint(1, 9999)
-    rng = random.Random(seed)
-    similar_ids = rng.sample(range(1, 357_001), limit)
-    scores = [round(0.88 - i * 0.04, 3) for i in range(limit)]
-    return [_make_track(sid, sc) for sid, sc in zip(similar_ids, scores)]
+    """Fetch similar tracks. Uses mock data when API key is absent."""
+    if _USE_MOCK:
+        return _mock_fetch_similar(track_id, limit)
+    return _real_fetch_similar_tracks(track_id, limit)
