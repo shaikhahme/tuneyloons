@@ -15,6 +15,7 @@ Falls back to deterministic mock data when cyaniteApiKey is not set.
 import json
 import os
 import random
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
@@ -39,6 +40,23 @@ _MODELS_TO_FETCH = [
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _with_retry(request_fn, max_retries: int = 4, base_delay: float = 5.0):
+    """
+    Call request_fn() and retry on HTTP 429 with exponential backoff.
+    Non-429 HTTP errors are raised immediately.
+    """
+    for attempt in range(max_retries + 1):
+        resp = request_fn()
+        if resp.status_code != 429:
+            resp.raise_for_status()
+            return resp
+        if attempt == max_retries:
+            resp.raise_for_status()   # raises requests.HTTPError
+        wait = base_delay * (2 ** attempt)   # 5, 10, 20, 40 s
+        print(f"[cyanite] rate limited (429), retrying in {wait:.0f}s (attempt {attempt + 1}/{max_retries})")
+        time.sleep(wait)
+
 
 def _session() -> requests.Session:
     s = requests.Session()
@@ -150,12 +168,13 @@ def _fetch_models_for_item(sess: requests.Session, item: dict) -> TrackModels | 
         return None
     params = [("model", m) for m in _MODELS_TO_FETCH]
     try:
-        resp = sess.get(
-            f"{_BASE_URL}/library-tracks/{cyanite_id}/models",
-            params=params,
-            timeout=15,
+        resp = _with_retry(
+            lambda: sess.get(
+                f"{_BASE_URL}/library-tracks/{cyanite_id}/models",
+                params=params,
+                timeout=15,
+            )
         )
-        resp.raise_for_status()
         model_resp = resp.json()
         features = _parse_model_items(model_resp.get("items", []))
         return _build_track_model(item, features)
@@ -190,13 +209,14 @@ def _real_search_tracks(query: str, metadata_filter: dict, limit: int) -> list[T
 
     print(f"[cyanite] search query={query!r} filter={metadata_filter} limit={limit}")
     try:
-        resp = sess.post(
-            f"{_BASE_URL}/private-alpha/library-tracks/search",
-            params={"limit": limit},
-            json=body,
-            timeout=30,
+        resp = _with_retry(
+            lambda: sess.post(
+                f"{_BASE_URL}/private-alpha/library-tracks/search",
+                params={"limit": limit},
+                json=body,
+                timeout=30,
+            )
         )
-        resp.raise_for_status()
         items = resp.json().get("items", [])
     except Exception as exc:
         print(f"[cyanite] search failed: {exc}")
@@ -224,13 +244,14 @@ def _real_search_tracks(query: str, metadata_filter: dict, limit: int) -> list[T
 def _real_fetch_similar(track_id: str, limit: int) -> list[TrackModels]:
     sess = _session()
     try:
-        resp = sess.post(
-            f"{_BASE_URL}/private-alpha/library-tracks/{track_id}/similar",
-            params={"limit": limit},
-            json={},
-            timeout=15,
+        resp = _with_retry(
+            lambda: sess.post(
+                f"{_BASE_URL}/private-alpha/library-tracks/{track_id}/similar",
+                params={"limit": limit},
+                json={},
+                timeout=15,
+            )
         )
-        resp.raise_for_status()
         items = resp.json().get("items", [])
     except Exception as exc:
         print(f"[cyanite] similar failed for {track_id}: {exc}")
@@ -316,11 +337,15 @@ def _mock_fetch_similar(track_id: str, limit: int) -> list[TrackModels]:
 # ── Public interface ──────────────────────────────────────────────────────────
 
 def search_tracks(query: str, metadata_filter: dict | None = None, limit: int = 50) -> list[TrackModels]:
-    """Search the Cyanite catalog. Uses mock data when API key is absent."""
+    """Search the Cyanite catalog. Uses mock data when API key is absent or API returns empty."""
     if _USE_MOCK:
         print("[cyanite] No API key — using mock data")
         return _mock_search_tracks(query, limit)
-    return _real_search_tracks(query, metadata_filter or {}, limit)
+    tracks = _real_search_tracks(query, metadata_filter or {}, limit)
+    if not tracks:
+        print("[cyanite] real API returned no tracks — falling back to mock data")
+        return _mock_search_tracks(query, limit)
+    return tracks
 
 
 def fetch_track_models(track_id: str) -> TrackModels | None:

@@ -191,7 +191,8 @@ async def generate_playlist_stream(request: PlaylistRequest):
                 search_tracks, query=intent.query, metadata_filter=cyanite_filter, limit=50
             )
             if not candidates:
-                yield _sse("error", json.dumps({"message": "Cyanite returned no tracks."}))
+                # cyanite.py already tries mock fallback, so this is a hard failure
+                yield _sse("error", json.dumps({"message": "Could not load any tracks — please try again."}))
                 return
 
             # Step 3 — ranking (CPU in thread)
