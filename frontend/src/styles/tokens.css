@@ -1,15 +1,19 @@
 :root {
-  --deep-ocean: #06283D;
-  --mid-ocean: #1363DF;
-  --aqua: #47B5FF;
-  --bubble-blue: #DFF6FF;
-  --seafoam: #A5F1E9;
-  --iridescent-pink: #F7A4D8;
-  --soft-purple: #B8B5FF;
-  --glass-white: rgba(255, 255, 255, 0.22);
-  --glass-border: rgba(255, 255, 255, 0.42);
-  --glow-cyan: rgba(71, 181, 255, 0.75);
-  --text-primary: #DFF6FF;
-  --text-secondary: rgba(223, 246, 255, 0.7);
-  --text-dark: #06283D;
+  --deep-ocean:      #010810;
+  --mid-ocean:       #041C30;
+  --aqua:            #7FEFFF;
+  --ice-blue:        #C9F7FF;
+  --soft-cyan:       #8BE9FD;
+  --pearl-white:     #F8FFFF;
+  --holo-lavender:   #D8C9FF;
+  --bubble-blue:     #E8FEFF;
+  --seafoam:         #7FEFFF;
+  --iridescent-pink: #FFB3E6;
+  --soft-purple:     #D8C9FF;
+  --glass-white:     rgba(255, 255, 255, 0.10);
+  --glass-border:    rgba(255, 255, 255, 0.38);
+  --glow-cyan:       rgba(127, 239, 255, 0.85);
+  --text-primary:    #F8FFFF;
+  --text-secondary:  rgba(201, 247, 255, 0.70);
+  --text-dark:       #010810;
 }

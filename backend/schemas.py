@@ -30,6 +30,7 @@ class TrackModels(BaseModel):
     arousal: float         # 0-1, from ValenceArousalV2
     tempo_tag: str         # "slow" | "medium" | "fast"
     bpm: float
+    musical_key: str = "" # e.g. "C Major", "A Minor"
     movement: str          # e.g. "driving", "floating"
     character: list[str]   # e.g. ["aggressive", "dark"]
     description: str       # AutoDescriptionV2 free text
@@ -83,6 +84,8 @@ class GraphNode(BaseModel):
     type: str        # "playlist" | "related"
     energy: float
     genre: str
+    bpm: float = 0.0
+    musical_key: str = ""
 
 
 class GraphEdge(BaseModel):

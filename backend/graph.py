@@ -22,6 +22,8 @@ def _make_playlist_node(track: TrackModels, position: int) -> GraphNode:
         type="playlist",
         energy=track.energy,
         genre=track.genre,
+        bpm=track.bpm,
+        musical_key=track.musical_key,
     )
 
 
@@ -33,6 +35,8 @@ def _make_related_node(track: TrackModels) -> GraphNode:
         type="related",
         energy=track.energy,
         genre=track.genre,
+        bpm=track.bpm,
+        musical_key=track.musical_key,
     )
 
 
