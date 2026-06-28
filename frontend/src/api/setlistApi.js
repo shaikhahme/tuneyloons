@@ -21,6 +21,40 @@ function mapPlaylist(playlist) {
   }))
 }
 
+function bpmToTempo(bpm) {
+  if (!bpm || bpm <= 0) return ''
+  if (bpm < 90) return 'slow'
+  if (bpm <= 120) return 'medium'
+  return 'fast'
+}
+
+function computeEdgeDelta(src, tgt) {
+  if (!src || !tgt) return ''
+  const parts = []
+
+  // BPM
+  if (src.bpm > 0 && tgt.bpm > 0) {
+    const d = Math.round(tgt.bpm - src.bpm)
+    if (d !== 0) parts.push(`${d > 0 ? '+' : ''}${d}bpm`)
+  }
+
+  // Energy (only show if diff >= 0.05)
+  const ed = tgt.energy - src.energy
+  if (Math.abs(ed) >= 0.05) parts.push(`${ed > 0 ? '+' : ''}${ed.toFixed(2)} energy`)
+
+  // Tempo (only if changed)
+  const st = bpmToTempo(src.bpm), tt = bpmToTempo(tgt.bpm)
+  if (st && tt && st !== tt) parts.push(`${st}→${tt}`)
+
+  // Mood additions (+) and removals (-)
+  const srcM = new Set(src.moods || [])
+  const tgtM = new Set(tgt.moods || [])
+  tgtM.forEach(m => { if (!srcM.has(m)) parts.push(`+${m}`) })
+  srcM.forEach(m => { if (!tgtM.has(m)) parts.push(`-${m}`) })
+
+  return parts.join(' · ')
+}
+
 function mapGraph(graph, playlist) {
   const scoreById = {}
   playlist.forEach(item => { scoreById[item.track.id] = item.score })
@@ -38,12 +72,22 @@ function mapGraph(graph, playlist) {
     moods: node.moods ?? [],
   }))
 
-  const edges = graph.edges.map(edge => ({
-    source: edge.source,
-    target: edge.target,
-    strength: edge.transition_score ?? 0.5,
-    label: edge.transition_explanation || edge.type || '',
-  }))
+  const nodeById = {}
+  nodes.forEach(n => { nodeById[n.id] = n })
+
+  const edges = graph.edges.map(edge => {
+    const delta = computeEdgeDelta(nodeById[edge.source], nodeById[edge.target])
+    const llm = edge.transition_explanation || ''
+    const label = llm
+      ? (delta ? `${llm} (${delta})` : llm)
+      : (delta ? `(${delta})` : edge.type || '')
+    return {
+      source: edge.source,
+      target: edge.target,
+      strength: edge.transition_score ?? 0.5,
+      label,
+    }
+  })
 
   return { nodes, edges }
 }

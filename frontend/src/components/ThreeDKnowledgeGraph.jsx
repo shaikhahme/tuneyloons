@@ -48,6 +48,9 @@ export default function ThreeDKnowledgeGraph({
   const connectedEdgesRef = useRef(new Set())
   const neighborIdsRef    = useRef(new Set())
 
+  // rAF-readable ref for edge label visibility
+  const showEdgeLabelsRef = useRef(showEdgeLabels)
+
   // Spring state — mutated every frame by the rAF loop, set by the orbit effect
   // orbitRef.fixed:     Map<nodeId, {x,y,z}>  — nodes pinned at a world position
   // orbitRef.springing: Map<nodeId, {px,py,pz,vx,vy,vz,tx,ty,tz}> — nodes easing to target
@@ -83,6 +86,7 @@ export default function ThreeDKnowledgeGraph({
   useEffect(() => { selectedIdRef.current     = selectedId     }, [selectedId])
   useEffect(() => { connectedEdgesRef.current = connectedEdges }, [connectedEdges])
   useEffect(() => { neighborIdsRef.current    = neighborIds    }, [neighborIds])
+  useEffect(() => { showEdgeLabelsRef.current = showEdgeLabels }, [showEdgeLabels])
 
   // Load ForceGraph3D async
   useEffect(() => {
@@ -284,10 +288,30 @@ export default function ThreeDKnowledgeGraph({
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3))
     const mat = new THREE.LineBasicMaterial({ color: 0x7FEFFF, transparent: true, opacity: 0.22, depthWrite: false })
     link._arcMat = mat
-    return new THREE.Line(geo, mat)
+    const line = new THREE.Line(geo, mat)
+    link._arcLine = line
+
+    const sprite = new SpriteText(link.label || '')
+    Object.assign(sprite, {
+      color: 'rgba(200,240,255,0.90)',
+      textHeight: 3,
+      backgroundColor: 'rgba(0,14,38,0.72)',
+      padding: 2,
+      borderRadius: 3,
+      fontFace: 'Comfortaa, Nunito, sans-serif',
+      visible: false,
+    })
+    sprite.renderOrder = 999
+    sprite.material.depthTest = false
+    sprite.material.depthWrite = false
+    link._labelSprite = sprite
+
+    const group = new THREE.Group()
+    group.add(line, sprite)
+    return group
   }, [])
 
-  const linkPositionUpdate = useCallback((lineObj, { start, end }) => {
+  const linkPositionUpdate = useCallback((groupObj, { start, end }, link) => {
     const A = new THREE.Vector3(start.x, start.y, start.z)
     const B = new THREE.Vector3(end.x, end.y, end.z)
     const mid = new THREE.Vector3().addVectors(A, B).multiplyScalar(0.5)
@@ -297,14 +321,21 @@ export default function ThreeDKnowledgeGraph({
       ? (Math.abs(A.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0)).multiplyScalar(arcH)
       : mid.clone().normalize().multiplyScalar(midLen + arcH)
     const pts = new THREE.QuadraticBezierCurve3(A, ctrl, B).getPoints(NUM_CURVE_PTS - 1)
-    const arr = lineObj.geometry.attributes.position.array
-    pts.forEach((p, i) => { arr[i*3] = p.x; arr[i*3+1] = p.y; arr[i*3+2] = p.z })
-    lineObj.geometry.attributes.position.needsUpdate = true
-    lineObj.geometry.computeBoundingSphere()
+
+    if (link._arcLine) {
+      const arr = link._arcLine.geometry.attributes.position.array
+      pts.forEach((p, i) => { arr[i*3] = p.x; arr[i*3+1] = p.y; arr[i*3+2] = p.z })
+      link._arcLine.geometry.attributes.position.needsUpdate = true
+      link._arcLine.geometry.computeBoundingSphere()
+    }
+
+    if (link._labelSprite && pts.length > 0) {
+      const mp = pts[Math.floor(pts.length / 2)]
+      link._labelSprite.position.set(mp.x, mp.y, mp.z)
+    }
+
     return true
   }, [])
-
-  const linkLabel = useCallback((link) => showEdgeLabels ? link.label : '', [showEdgeLabels])
 
   // ── Master rAF loop ───────────────────────────────────────────────────────
   // Runs every frame: position springs → scale springs → sprites → materials
@@ -382,7 +413,7 @@ export default function ThreeDKnowledgeGraph({
             }
           })
 
-          // ── Arc edge colours ──────────────────────────────────────────
+          // ── Arc edge colours + label visibility ───────────────────────
           fgData.links.forEach(link => {
             if (!link._arcMat) return
             const src = typeof link.source === 'object' ? link.source.id : link.source
@@ -395,6 +426,7 @@ export default function ThreeDKnowledgeGraph({
             } else {
               link._arcMat.color.setHex(0x7FEFFF); link._arcMat.opacity = 0.04
             }
+            if (link._labelSprite) link._labelSprite.visible = showEdgeLabelsRef.current
           })
         }
       }
@@ -429,7 +461,6 @@ export default function ThreeDKnowledgeGraph({
         linkThreeObject={linkThreeObject}
         linkPositionUpdate={linkPositionUpdate}
         linkThreeObjectExtend={false}
-        linkLabel={linkLabel}
         onNodeClick={(node) => onNodeClick(node.id)}
         onNodeHover={(node) => onNodeHover?.(node ?? null)}
       />
