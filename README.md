@@ -1,6 +1,8 @@
-# Tuneyloons — AI DJ That Explains Itself
+# Song Aquarium — AI DJ That Explains Itself
 
-Most music apps just hand you a playlist. Tuneyloons tells you **why** every song is there, what would happen if you asked for something different, and lets you see how all the songs relate to each other in a 3D map.
+*By TuneyLoons*
+
+Most music apps just hand you a playlist. Song Aquarium tells you **why** every song is there, what would happen if you asked for something different, and lets you see how all the songs relate to each other in a 3D map.
 
 You type something like `"girly pop for a 10 min drive"` and get back:
 
@@ -15,7 +17,7 @@ You type something like `"girly pop for a 10 min drive"` and get back:
 
 Music recommendation is usually a black box. Spotify says "you might like this" — but why? What feature of the song matched? What would have to change for a different song to win?
 
-Tuneyloons is built around the opposite idea: **every decision is inspectable and falsifiable.** The AI never makes choices you can't trace back to a reason.
+Song Aquarium is built around the opposite idea: **every decision is inspectable and falsifiable.** The AI never makes choices you can't trace back to a reason.
 
 ---
 
@@ -66,7 +68,7 @@ Between every consecutive pair of songs, we compute six audio-feature deltas: ho
 
 ### Step 6 — The "What If" Playlist (Counterfactual Explanation)
 
-This is the part that makes Tuneyloons different from any other recommendation explainer.
+This is the part that makes Song Aquarium different from any other recommendation explainer.
 
 **The idea:** if you flip one assumption — say, change the ending from a big climax to a gentle wind-down — which songs swap out, and why?
 
